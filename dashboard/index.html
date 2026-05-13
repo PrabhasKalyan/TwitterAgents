@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Outreach Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0d11;
+    --bg-2: #11141a;
+    --bg-3: #161a22;
+    --line: #232834;
+    --line-2: #2c3240;
+    --fg: #e6e9ef;
+    --fg-dim: #8a93a4;
+    --fg-mute: #5b6473;
+    --accent: #6ee7b7;
+    --accent-2: #38bdf8;
+    --warn: #fbbf24;
+    --err: #ef4444;
+    --ok: #22c55e;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg);
+               font-family: 'Inter', system-ui, sans-serif; font-size: 14px; }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  a { color: var(--accent-2); text-decoration: none; }
+  button { font-family: inherit; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 22px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #0e1117 0%, #0b0d11 100%);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .title { display: flex; align-items: baseline; gap: 12px; }
+  .title h1 { margin: 0; font-size: 18px; letter-spacing: 0.3px; }
+  .title .who { color: var(--fg-dim); font-size: 13px; }
+  .badge { display: inline-flex; align-items: center; gap: 6px;
+           padding: 4px 10px; border-radius: 999px; background: var(--bg-3);
+           font-size: 12px; color: var(--fg-dim); border: 1px solid var(--line); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--err); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+
+  .container { padding: 18px 22px 60px; max-width: 1600px; margin: 0 auto; }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+  .stat { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+          padding: 14px 16px; }
+  .stat .label { color: var(--fg-dim); font-size: 11px; text-transform: uppercase;
+                 letter-spacing: 0.8px; font-weight: 600; }
+  .stat .value { font-size: 28px; font-weight: 600; margin-top: 6px; letter-spacing: -0.5px; }
+  .stat .value.warn { color: var(--warn); }
+  .stat .value.err { color: var(--err); }
+  .stat .value.ok { color: var(--accent); }
+  .stat .sub { color: var(--fg-mute); font-size: 11px; margin-top: 2px; }
+
+  /* Pipeline */
+  .pipeline { margin-top: 18px; background: var(--bg-2);
+              border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .pipeline h2 { margin: 0 0 12px; font-size: 13px; color: var(--fg-dim);
+                 text-transform: uppercase; letter-spacing: 0.8px; }
+  .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; align-items: stretch; }
+  .step { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+          background: var(--bg-3); position: relative; }
+  .step .name { font-size: 12px; color: var(--fg-dim); text-transform: uppercase;
+                letter-spacing: 0.7px; font-weight: 600; }
+  .step .status { font-size: 14px; font-weight: 600; margin-top: 4px; }
+  .step .progress-bar { height: 4px; background: var(--line); border-radius: 2px;
+                        overflow: hidden; margin-top: 8px; }
+  .step .progress-bar > div { height: 100%; background: var(--accent-2);
+                              transition: width 240ms ease; }
+  .step.running .status { color: var(--accent-2); }
+  .step.completed .status { color: var(--accent); }
+  .step.failed .status, .step.rate_limited .status { color: var(--err); }
+  .step.idle .status { color: var(--fg-mute); }
+  .step .meta { font-size: 11px; color: var(--fg-mute); margin-top: 4px; }
+
+  /* Main two-column */
+  .main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; margin-top: 18px; }
+  @media (max-width: 1100px) { .main { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--bg-2); border: 1px solid var(--line);
+           border-radius: 10px; display: flex; flex-direction: column; min-height: 540px; }
+  .panel-head { display: flex; justify-content: space-between; align-items: center;
+                padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .panel-head h2 { margin: 0; font-size: 13px; text-transform: uppercase;
+                   letter-spacing: 0.8px; color: var(--fg-dim); }
+  .panel-body { padding: 12px 16px; overflow: auto; max-height: 70vh; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 6px; }
+  .tab { padding: 5px 10px; background: var(--bg-3); border: 1px solid var(--line);
+         border-radius: 6px; font-size: 12px; color: var(--fg-dim); cursor: pointer;
+         font-weight: 500; }
+  .tab.active { background: var(--accent-2); color: #0a0f1a; border-color: var(--accent-2); }
+  .tab:hover:not(.active) { color: var(--fg); }
+
+  /* DM cards */
+  .dm-card { background: var(--bg-3); border: 1px solid var(--line);
+             border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .dm-head { display: flex; justify-content: space-between; align-items: flex-start;
+             gap: 12px; margin-bottom: 8px; }
+  .dm-who { font-weight: 600; font-size: 14px; }
+  .dm-who .handle { color: var(--accent-2); font-weight: 500; }
+  .dm-who .co { color: var(--fg-dim); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .dm-text { width: 100%; background: var(--bg); border: 1px solid var(--line);
+             border-radius: 6px; padding: 8px 10px; color: var(--fg);
+             font-family: inherit; font-size: 13px; line-height: 1.5; resize: vertical;
+             min-height: 60px; }
+  .dm-meta { display: flex; justify-content: space-between; align-items: center;
+             margin-top: 8px; }
+  .char-count { font-size: 11px; color: var(--fg-mute); }
+  .char-count.over { color: var(--err); font-weight: 600; }
+  .dm-actions { display: flex; gap: 6px; }
+  .btn { padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line);
+         background: var(--bg-2); color: var(--fg); cursor: pointer; font-size: 12px;
+         font-weight: 500; }
+  .btn:hover { border-color: var(--line-2); }
+  .btn.primary { background: var(--accent); color: #052e1a; border-color: var(--accent); }
+  .btn.danger { background: transparent; color: var(--err); border-color: #4a1f23; }
+  .btn.bulk { background: var(--accent-2); color: #0a0f1a; border-color: var(--accent-2); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px;
+          font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .pill.sent { background: rgba(34,197,94,0.15); color: var(--accent); }
+  .pill.failed { background: rgba(239,68,68,0.15); color: var(--err); }
+  .pill.queued { background: rgba(56,189,248,0.15); color: var(--accent-2); }
+  .pill.pending { background: rgba(251,191,36,0.15); color: var(--warn); }
+
+  /* Logs */
+  .log-window { background: #06080c; color: #cdd6e4; padding: 12px 14px;
+                font-family: 'JetBrains Mono', monospace; font-size: 12px;
+                line-height: 1.55; overflow-y: auto; height: 65vh;
+                border-radius: 0 0 10px 10px; white-space: pre-wrap; }
+  .log-line.warn { color: var(--warn); }
+  .log-line.err  { color: #fca5a5; }
+  .log-line.ok   { color: #86efac; }
+  .scroll-toggle { font-size: 11px; color: var(--fg-dim); cursor: pointer;
+                   padding: 4px 8px; border-radius: 4px; }
+  .scroll-toggle.paused { color: var(--warn); background: rgba(251,191,36,0.1); }
+
+  /* Screenshots */
+  .screenshots { margin-top: 18px; }
+  .ss-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+             gap: 10px; padding: 12px 16px; }
+  .ss-grid img { width: 100%; border: 1px solid var(--line); border-radius: 6px;
+                 cursor: pointer; transition: transform 0.15s; }
+  .ss-grid img:hover { transform: scale(1.04); border-color: var(--line-2); }
+  .ss-grid .ss-name { font-size: 10px; color: var(--fg-mute); margin-top: 4px;
+                      word-break: break-all; }
+
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none;
+           align-items: center; justify-content: center; z-index: 50; padding: 40px; }
+  .modal.on { display: flex; }
+  .modal img { max-width: 95%; max-height: 95%; border-radius: 6px; }
+
+  .empty { color: var(--fg-mute); text-align: center; padding: 40px 20px; font-size: 13px; }
+  details > summary { cursor: pointer; padding: 12px 16px; color: var(--fg-dim);
+                      font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px;
+                      font-weight: 600; user-select: none; }
+  details[open] > summary { border-bottom: 1px solid var(--line); }
+  .row { display: flex; align-items: center; gap: 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="title">
+    <h1>Outreach Engine</h1>
+    <span class="who" id="who">Prabhas Kalyan</span>
+  </div>
+  <div class="row">
+    <span class="badge mono" id="clock">--:--:--</span>
+    <span class="badge"><span class="dot" id="conn-dot"></span><span id="conn-text">Connecting…</span></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- Stats row -->
+  <div class="stats">
+    <div class="stat"><div class="label">Companies Filtered</div>
+      <div class="value" id="s-filtered">0</div>
+      <div class="sub"><span id="s-total">0</span> total</div></div>
+    <div class="stat"><div class="label">Founders Found</div>
+      <div class="value" id="s-founders">0</div>
+      <div class="sub">with twitter handles</div></div>
+    <div class="stat"><div class="label">DMs Generated</div>
+      <div class="value" id="s-dms">0</div>
+      <div class="sub"><span id="s-pending">0</span> pending review</div></div>
+    <div class="stat"><div class="label">DMs Sent Today</div>
+      <div class="value ok" id="s-today">0/20</div>
+      <div class="sub">daily cap: 20</div></div>
+    <div class="stat"><div class="label">Failed</div>
+      <div class="value err" id="s-failed">0</div>
+      <div class="sub">requires retry</div></div>
+  </div>
+
+  <!-- Pipeline -->
+  <div class="pipeline">
+    <h2>Pipeline</h2>
+    <div class="steps" id="pipeline-steps">
+      <div class="step idle" data-step="filter"><div class="name">Filter</div>
+        <div class="status">idle</div><div class="progress-bar"><div></div></div>
+        <div class="meta">—</div></div>
+      <div class="step idle" data-step="find_handles"><div class="name">Find Handles</div>
+        <div class="status">idle</div><div class="progress-bar"><div></div></div>
+        <div class="meta">—</div></div>
+      <div class="step idle" data-step="generate_dms"><div class="name">Generate DMs</div>
+        <div class="status">idle</div><div class="progress-bar"><div></div></div>
+        <div class="meta">—</div></div>
+      <div class="step idle" data-step="review"><div class="name">Review</div>
+        <div class="status">manual</div><div class="progress-bar"><div></div></div>
+        <div class="meta">human-in-loop</div></div>
+      <div class="step idle" data-step="send"><div class="name">Send</div>
+        <div class="status">idle</div><div class="progress-bar"><div></div></div>
+        <div class="meta">—</div></div>
+    </div>
+  </div>
+
+  <!-- Main two-column -->
+  <div class="main">
+    <!-- DM Queue -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="row">
+          <h2>DM Review Queue</h2>
+        </div>
+        <div class="tabs" id="dm-tabs">
+          <div class="tab active" data-tab="pending">Pending <span id="cnt-pending">0</span></div>
+          <div class="tab" data-tab="approved">Approved <span id="cnt-approved">0</span></div>
+          <div class="tab" data-tab="sent">Sent <span id="cnt-sent">0</span></div>
+          <div class="tab" data-tab="failed">Failed <span id="cnt-failed">0</span></div>
+        </div>
+      </div>
+      <div class="panel-body" id="dm-body">
+        <div style="margin-bottom: 10px; display: flex; gap: 8px;">
+          <button class="btn bulk" id="bulk-approve">Approve all on page</button>
+          <button class="btn" id="refresh-dms">Refresh</button>
+        </div>
+        <div id="dm-list"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Live Log</h2>
+        <div class="row">
+          <span class="scroll-toggle" id="scroll-toggle">autoscroll: on</span>
+          <span class="badge mono" id="log-count">0 lines</span>
+        </div>
+      </div>
+      <div class="log-window" id="log-window"></div>
+    </div>
+  </div>
+
+  <!-- Screenshots -->
+  <div class="screenshots">
+    <details>
+      <summary id="ss-summary">Failed Send Screenshots (0)</summary>
+      <div class="ss-grid" id="ss-grid"></div>
+    </details>
+  </div>
+
+</div>
+
+<div class="modal" id="modal"><img id="modal-img" /></div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const $$ = s => document.querySelectorAll(s);
+
+  // Clock
+  setInterval(() => {
+    const d = new Date();
+    $("#clock").textContent = d.toTimeString().slice(0, 8);
+  }, 1000);
+
+  // ---------------- STATS ----------------
+  function renderStats(s) {
+    $("#s-filtered").textContent = s.filtered_companies;
+    $("#s-total").textContent = s.total_companies;
+    $("#s-founders").textContent = s.founders_found;
+    $("#s-dms").textContent = s.dms_generated;
+    $("#s-pending").textContent = s.dms_pending;
+    $("#s-today").textContent = `${s.todays_sends}/${s.daily_limit}`;
+    $("#s-failed").textContent = s.dms_failed;
+    const today = s.todays_sends;
+    $("#s-today").className = "value " + (today >= s.daily_limit ? "warn" : "ok");
+    $("#cnt-pending").textContent = s.dms_pending;
+    $("#cnt-approved").textContent = s.dms_approved;
+    $("#cnt-sent").textContent = s.dms_sent;
+    $("#cnt-failed").textContent = s.dms_failed;
+  }
+
+  // ---------------- PIPELINE ----------------
+  function renderPipeline(rows) {
+    const map = {};
+    rows.forEach(r => map[r.step] = r);
+    $$(".step").forEach(el => {
+      const step = el.dataset.step;
+      if (step === "review") return;
+      const r = map[step];
+      el.classList.remove("idle", "running", "completed", "failed", "rate_limited");
+      if (!r) { el.classList.add("idle"); return; }
+      el.classList.add(r.status || "idle");
+      el.querySelector(".status").textContent = r.status || "idle";
+      const total = r.items_total || 0;
+      const done = r.items_processed || 0;
+      const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+      el.querySelector(".progress-bar > div").style.width = `${pct}%`;
+      const t = r.finished_at || r.started_at;
+      el.querySelector(".meta").textContent =
+        total > 0 ? `${done}/${total} • ${t ? new Date(t.replace(' ','T')+'Z').toLocaleTimeString() : ''}` : (t || '');
+    });
+  }
+
+  // ---------------- LOGS ----------------
+  const logWindow = $("#log-window");
+  const logCount = $("#log-count");
+  let autoscroll = true;
+  const MAX_LOG = 500;
+  const logBuf = [];
+  function classifyLog(line) {
+    if (/\[ERROR\]/i.test(line)) return "err";
+    if (/\[WARNING\]/i.test(line)) return "warn";
+    if (/(✓|done|sent to|completed)/.test(line)) return "ok";
+    return "";
+  }
+  function appendLogs(lines) {
+    lines.forEach(line => {
+      if (logBuf.length && logBuf[logBuf.length - 1] === line) return; // dedupe consecutive
+      logBuf.push(line);
+    });
+    while (logBuf.length > MAX_LOG) logBuf.shift();
+    logWindow.innerHTML = logBuf.map(l => {
+      const cls = classifyLog(l);
+      return `<div class="log-line ${cls}">${escapeHTML(l)}</div>`;
+    }).join("");
+    logCount.textContent = `${logBuf.length} lines`;
+    if (autoscroll) logWindow.scrollTop = logWindow.scrollHeight;
+  }
+  function escapeHTML(s) {
+    return s.replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    })[c]);
+  }
+  $("#scroll-toggle").addEventListener("click", e => {
+    autoscroll = !autoscroll;
+    e.target.className = "scroll-toggle" + (autoscroll ? "" : " paused");
+    e.target.textContent = `autoscroll: ${autoscroll ? "on" : "off"}`;
+  });
+
+  // ---------------- SSE ----------------
+  let es = null;
+  let backoff = 1000;
+  function connectSSE() {
+    es = new EventSource("/api/logs/stream");
+    es.addEventListener("open", () => {
+      $("#conn-dot").classList.add("on");
+      $("#conn-text").textContent = "Connected";
+      backoff = 1000;
+    });
+    es.addEventListener("error", () => {
+      $("#conn-dot").classList.remove("on");
+      $("#conn-text").textContent = "Disconnected";
+      es.close();
+      backoff = Math.min(backoff * 1.6, 15000);
+      setTimeout(connectSSE, backoff);
+    });
+    es.addEventListener("stats", e => renderStats(JSON.parse(e.data)));
+    es.addEventListener("pipeline", e => renderPipeline(JSON.parse(e.data)));
+    es.addEventListener("log", e => {
+      const d = JSON.parse(e.data);
+      if (d.lines) appendLogs(d.lines);
+    });
+  }
+  connectSSE();
+
+  // ---------------- DM QUEUE ----------------
+  let currentTab = "pending";
+  $$("#dm-tabs .tab").forEach(t => {
+    t.addEventListener("click", () => {
+      $$("#dm-tabs .tab").forEach(x => x.classList.remove("active"));
+      t.classList.add("active");
+      currentTab = t.dataset.tab;
+      loadDMs();
+    });
+  });
+  $("#refresh-dms").addEventListener("click", loadDMs);
+
+  async function loadDMs() {
+    const body = $("#dm-list");
+    body.innerHTML = `<div class="empty">Loading…</div>`;
+    let url;
+    if (currentTab === "sent") {
+      url = "/api/dms?send_status=sent&limit=100";
+    } else if (currentTab === "failed") {
+      url = "/api/dms?send_status=failed&limit=100";
+    } else {
+      url = `/api/dms?status=${currentTab}&limit=100`;
+    }
+    try {
+      const r = await fetch(url);
+      const data = await r.json();
+      if (!data.length) {
+        body.innerHTML = `<div class="empty">No DMs in this bucket.</div>`;
+        return;
+      }
+      body.innerHTML = data.map(renderDMCard).join("");
+      wireCardEvents();
+    } catch (e) {
+      body.innerHTML = `<div class="empty">Failed to load: ${e}</div>`;
+    }
+  }
+
+  function renderDMCard(d) {
+    const editable = d.review_status === "pending";
+    const sendPill = d.send_status && d.send_status !== "queued"
+      ? `<span class="pill ${d.send_status}">${d.send_status}</span>` : "";
+    const revPill = `<span class="pill ${d.review_status}">${d.review_status}</span>`;
+    const err = d.error_msg ? `<div style="color: var(--err); font-size: 11px; margin-top: 6px;">⚠ ${escapeHTML(d.error_msg)}</div>` : "";
+    return `
+      <div class="dm-card" data-id="${d.id}">
+        <div class="dm-head">
+          <div class="dm-who">${escapeHTML(d.founder_name || "(unknown)")}
+            <span class="handle">@${escapeHTML(d.twitter_handle || "")}</span>
+            <span class="co">${escapeHTML(d.company_name || "")}</span>
+          </div>
+          <div>${revPill} ${sendPill}</div>
+        </div>
+        <textarea class="dm-text" ${editable ? "" : "readonly"}>${escapeHTML(d.dm_text || "")}</textarea>
+        ${err}
+        <div class="dm-meta">
+          <div class="char-count ${(d.char_count||0) > 280 ? 'over' : ''}">
+            <span class="cc-val">${(d.dm_text||'').length}</span> chars
+          </div>
+          <div class="dm-actions">
+            ${editable ? `
+              <button class="btn primary act-approve">Approve</button>
+              <button class="btn danger act-skip">Skip</button>
+            ` : (d.review_status === 'skipped' || d.review_status === 'approved') ?
+              `<button class="btn act-unreview">Move back to pending</button>` : ''
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function wireCardEvents() {
+    $$(".dm-card").forEach(card => {
+      const id = card.dataset.id;
+      const ta = card.querySelector(".dm-text");
+      const ccVal = card.querySelector(".cc-val");
+      const ccBox = card.querySelector(".char-count");
+      if (ta) {
+        ta.addEventListener("input", () => {
+          ccVal.textContent = ta.value.length;
+          ccBox.classList.toggle("over", ta.value.length > 280);
+        });
+      }
+      const approve = card.querySelector(".act-approve");
+      const skip    = card.querySelector(".act-skip");
+      const unreview = card.querySelector(".act-unreview");
+      if (approve) approve.addEventListener("click", () => review(id, "approved", ta.value, card));
+      if (skip) skip.addEventListener("click", () => review(id, "skipped", null, card));
+      if (unreview) unreview.addEventListener("click", () => review(id, "pending", null, card));
+    });
+  }
+
+  async function review(id, status, text, card) {
+    try {
+      const body = { status };
+      if (text !== null && text !== undefined) body.dm_text = text;
+      const r = await fetch(`/api/dms/${id}/review`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      card.style.transition = "opacity 0.25s";
+      card.style.opacity = "0";
+      setTimeout(() => card.remove(), 250);
+    } catch (e) {
+      alert("Failed: " + e.message);
+    }
+  }
+
+  $("#bulk-approve").addEventListener("click", async () => {
+    if (currentTab !== "pending") { alert("Switch to Pending tab to bulk approve"); return; }
+    const cards = $$(".dm-card");
+    if (!cards.length) return;
+    if (!confirm(`Approve ${cards.length} DMs on this page? Edits in textareas will be saved.`)) return;
+    for (const card of cards) {
+      const id = card.dataset.id;
+      const txt = card.querySelector(".dm-text").value;
+      await fetch(`/api/dms/${id}/review`, {
+        method: "PATCH", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ status: "approved", dm_text: txt }),
+      });
+    }
+    loadDMs();
+  });
+
+  // ---------------- SCREENSHOTS ----------------
+  async function loadScreenshots() {
+    try {
+      const r = await fetch("/api/screenshots");
+      const list = await r.json();
+      $("#ss-summary").textContent = `Failed Send Screenshots (${list.length})`;
+      const grid = $("#ss-grid");
+      if (!list.length) {
+        grid.innerHTML = `<div class="empty" style="grid-column: 1/-1;">No screenshots yet.</div>`;
+        return;
+      }
+      grid.innerHTML = list.map(s => `
+        <div>
+          <img src="/api/screenshots/${encodeURIComponent(s.name)}" data-src="/api/screenshots/${encodeURIComponent(s.name)}" />
+          <div class="ss-name">${escapeHTML(s.name)}</div>
+        </div>
+      `).join("");
+      grid.querySelectorAll("img").forEach(img => {
+        img.addEventListener("click", () => {
+          $("#modal-img").src = img.dataset.src;
+          $("#modal").classList.add("on");
+        });
+      });
+    } catch (e) {}
+  }
+  $("#modal").addEventListener("click", () => $("#modal").classList.remove("on"));
+  setInterval(loadScreenshots, 20000);
+  loadScreenshots();
+  loadDMs();
+  // Refresh DM list when stats change
+  let prevDMs = -1;
+  setInterval(async () => {
+    try {
+      const r = await fetch("/api/stats"); const s = await r.json();
+      const sig = s.dms_generated + ":" + s.dms_pending + ":" + s.dms_approved + ":" + s.dms_sent + ":" + s.dms_failed;
+      if (sig !== prevDMs) { prevDMs = sig; loadDMs(); }
+    } catch (e) {}
+  }, 8000);
+</script>
+</body>
+</html>

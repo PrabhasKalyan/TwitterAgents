@@ -1,0 +1,7 @@
+.env
+data/
+logs/
+inputs/twitter_credentials.json
+__pycache__/
+*.pyc
+.DS_Store

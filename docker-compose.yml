@@ -1,0 +1,43 @@
+services:
+  api:
+    build: ./api
+    container_name: outreach-api
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+    environment:
+      - DATABASE_URL=/data/outreach.db
+      - LOG_FILE=/logs/outreach.log
+      - SCREENSHOT_DIR=/data/screenshots
+    ports:
+      - "8000:8000"
+
+  dashboard:
+    build: ./dashboard
+    container_name: outreach-dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+  worker:
+    build: ./worker
+    container_name: outreach-worker
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+      - ./inputs:/inputs:ro
+    environment:
+      - DATABASE_URL=/data/outreach.db
+      - LOG_FILE=/logs/outreach.log
+      - SCREENSHOT_DIR=/data/screenshots
+      - BATCHES_CSV=/inputs/batches.csv
+      - CONTEXT_MD=/inputs/context.md
+      - TW_CREDS=/inputs/twitter_credentials.json
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      - FIND_HANDLES_LIMIT=${FIND_HANDLES_LIMIT:-0}
+    profiles:
+      - worker

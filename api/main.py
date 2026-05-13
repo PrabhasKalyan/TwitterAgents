@@ -60,7 +60,8 @@ def _stats() -> dict:
     conn = _conn()
     try:
         def scalar(q, *p):
-            return conn.execute(q, p).fetchone()[0]
+            row = conn.execute(q, p).fetchone()
+            return row[0] if row else 0
 
         today = date.today().isoformat()
         return {
@@ -71,7 +72,7 @@ def _stats() -> dict:
             "dms_approved": scalar("SELECT COUNT(*) FROM dms WHERE review_status = 'approved'"),
             "dms_sent": scalar("SELECT COUNT(*) FROM dms WHERE send_status = 'sent'"),
             "dms_failed": scalar("SELECT COUNT(*) FROM dms WHERE send_status = 'failed'"),
-            "todays_sends": scalar("SELECT COALESCE(count, 0) FROM daily_send_log WHERE date = ?", today) or 0,
+            "todays_sends": scalar("SELECT count FROM daily_send_log WHERE date = ?", today),
             "daily_limit": DAILY_LIMIT,
             "dms_pending": scalar("SELECT COUNT(*) FROM dms WHERE review_status = 'pending'"),
             "dms_skipped": scalar("SELECT COUNT(*) FROM dms WHERE review_status = 'skipped'"),

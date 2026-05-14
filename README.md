@@ -53,7 +53,6 @@ find_handles   per founder:
                  1. company website /team /about /founders pages → direct X links
                  2. YC company page → direct X links + name candidates
                  3. company's official X account → /following crawl (corroboration)
-                 4. Bing search (Playwright) — last resort
                verify every candidate: bio mentions company OR follows company X
                assign confidence: high | medium | low
                follow the founder on X

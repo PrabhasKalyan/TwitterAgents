@@ -9,9 +9,13 @@ Per-company pipeline:
   3. Resolve the COMPANY'S OFFICIAL X handle (website footer → x.com search).
      Crawl that account's `/following` to harvest (display_name, handle)
      candidates — founders almost always follow their own company.
-  4. BING via Playwright as last-resort fallback.
 
-Every candidate is then STRICT-VERIFIED:
+If none of those three tiers produce a candidate, the founder is recorded as
+`not_found`. Search engines are deliberately excluded — they 403 from cloud
+IPs and their results are noisy enough that strict verification rejects most
+of them anyway.
+
+Every candidate is STRICT-VERIFIED:
   - Profile exists and not suspended
   - At least ONE of:
       • Bio contains company name OR website domain  → confidence HIGH
@@ -153,8 +157,8 @@ async def _safe_goto(page, url: str, timeout: int = WEBSITE_PAGE_TIMEOUT_MS) -> 
 
 
 async def _safe_eval(page, js: str, default, *args):
-    """Wrap page.evaluate — pages can navigate/redirect mid-eval (Bing especially)
-    and that raises 'Execution context was destroyed'. Return `default` on any error."""
+    """Wrap page.evaluate — pages can navigate/redirect mid-eval and that raises
+    'Execution context was destroyed'. Return `default` on any error."""
     try:
         if args:
             return await page.evaluate(js, *args)
@@ -447,33 +451,6 @@ async def _company_following(page, co_handle: str) -> list[dict]:
     return rows
 
 
-# ---------------------- Bing fallback ----------------------
-
-async def _bing_handles(page, query: str) -> list[str]:
-    url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
-    if not await _safe_goto(page, url, 25000):
-        return []
-    hrefs = await _safe_eval(
-        page,
-        """() => Array.from(document.querySelectorAll('a[href]'))
-            .map(a => a.href).filter(h => /(?:x|twitter)\\.com\\//i.test(h))""",
-        [],
-    )
-    out, seen = [], set()
-    for href in hrefs:
-        if "/status/" in href or "/intent/" in href:
-            continue
-        m = HANDLE_RE.search(href)
-        if not m:
-            continue
-        h = m.group(1)
-        if h.lower() in RESERVED_HANDLES or h in seen:
-            continue
-        seen.add(h)
-        out.append(h)
-    return out[:8]
-
-
 # ---------------------- verification ----------------------
 
 async def _profile_signals(page, handle: str) -> dict | None:
@@ -647,14 +624,6 @@ async def _resolve_founder(page, founder_name: str, comp: dict, pool: dict) -> d
 
     cands = _founder_candidates(pool, founder_name)
 
-    # Bing fallback if no candidates from primary sources
-    if not cands:
-        bing_handles = await _bing_handles(page, f'"{founder_name}" "{comp["name"]}" (site:x.com OR site:twitter.com)')
-        if not bing_handles:
-            bing_handles = await _bing_handles(page, f'{founder_name} {comp["name"]} twitter')
-        for h in bing_handles[:5]:
-            cands.append((h, "bing", False))
-
     for handle, source, is_direct in cands:
         sig = await _profile_signals(page, handle)
         if not sig or not sig.get("exists"):
@@ -689,7 +658,7 @@ async def _async_run(company_ids: list[int] | None = None):
 
     total = len(companies)
     run_id = start_run("find_handles", total=total)
-    log.info(f"find_handles: {total} companies (website→YC→company_following→bing)")
+    log.info(f"find_handles: {total} companies (website → YC → company_following)")
 
     cookies = _load_cookies()
 

@@ -4,9 +4,14 @@ Skips:
   - founders with no found handle
   - founders whose activity_score is 'dead' (no posts in > ACTIVITY_DORMANT_DAYS)
   - founders that already have a DM (any sequence) in the queue
+
+When AUTO_APPROVE_DMS=True, generated drafts are inserted with
+review_status='approved' so the send step picks them up immediately
+without human review.
 """
 import os
 
+from config import AUTO_APPROVE_DMS
 from db import connect, init_db, start_run, update_run
 from logger import get_logger, get_tail
 
@@ -116,16 +121,16 @@ def run(founder_ids: list[int] | None = None):
             continue
 
         char_count = len(dm_text)
+        review_status = "approved" if AUTO_APPROVE_DMS else "pending"
         with connect() as conn:
             cur = conn.execute(
                 """INSERT INTO dms (founder_id, company_name, founder_name, twitter_handle,
-                                    dm_text, char_count, sequence)
-                   VALUES (?, ?, ?, ?, ?, ?, 1)""",
+                                    dm_text, char_count, sequence, review_status)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
                 (r["founder_id"], r["company_name"], r["founder_name"],
-                 r["twitter_handle"], dm_text, char_count),
+                 r["twitter_handle"], dm_text, char_count, review_status),
             )
             new_id = cur.lastrowid
-            # thread_id = self for initial DMs.
             conn.execute("UPDATE dms SET thread_id = ? WHERE id = ?", (new_id, new_id))
             conn.commit()
 

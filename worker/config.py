@@ -33,3 +33,15 @@ FOLLOWUP_QUEUE_INTERVAL = 24 * 3600
 
 # After verifying a handle in find_handles, click the Follow button on x.com.
 FOLLOW_AFTER_VERIFY = True
+
+# How many followers a candidate needs to be considered a plausible founder
+# when the only signal is a name match (to reject imposters).
+MIN_FOLLOWERS_FOR_NAME_ONLY = 50
+
+# Per-company crawl limits.
+COMPANY_FOLLOWING_CRAWL = 60       # how many "following" rows of company X to scan
+MAX_TEAM_PAGES_PER_COMPANY = 4     # cap how many team-like pages we visit
+WEBSITE_PAGE_TIMEOUT_MS = 20000
+
+# Auto-approve generated DMs (skip human review queue).
+AUTO_APPROVE_DMS = True

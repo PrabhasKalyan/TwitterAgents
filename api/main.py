@@ -86,6 +86,9 @@ def _stats() -> dict:
             "dms_sent": scalar("SELECT COUNT(*) FROM dms WHERE send_status = 'sent'"),
             "dms_failed": scalar("SELECT COUNT(*) FROM dms WHERE send_status = 'failed'"),
             "replies_received": scalar("SELECT COUNT(DISTINCT twitter_handle) FROM dms WHERE replied=1"),
+            "high_confidence": scalar("SELECT COUNT(*) FROM founders WHERE confidence='high'"),
+            "medium_confidence": scalar("SELECT COUNT(*) FROM founders WHERE confidence='medium'"),
+            "low_confidence": scalar("SELECT COUNT(*) FROM founders WHERE confidence='low'"),
             "todays_sends": scalar("SELECT count FROM daily_send_log WHERE date = ?", today),
             "daily_limit": DAILY_LIMIT,
             "dms_pending": scalar("SELECT COUNT(*) FROM dms WHERE review_status = 'pending'"),
@@ -170,9 +173,11 @@ def list_dms(
                        d.dm_text, d.char_count, d.review_status, d.send_status, d.sent_at,
                        d.error_msg, d.screenshot_path, d.created_at,
                        d.thread_id, d.sequence, d.replied, d.reply_checked_at,
-                       a.activity_score, a.last_tweet_at, a.followers
+                       a.activity_score, a.last_tweet_at, a.followers,
+                       f.confidence, f.evidence, f.search_source
                 FROM dms d
                 LEFT JOIN founder_activity a ON a.founder_id = d.founder_id
+                LEFT JOIN founders f ON f.id = d.founder_id
                 {where} ORDER BY d.id DESC LIMIT ? OFFSET ?""",
             params,
         ).fetchall()
@@ -271,7 +276,7 @@ def list_founders(handle_status: Optional[str] = None,
         params += [limit, offset]
         rows = conn.execute(
             f"""SELECT f.id, f.company_id, f.company_name, f.founder_name, f.twitter_handle,
-                       f.handle_status, f.search_source, f.created_at,
+                       f.handle_status, f.search_source, f.confidence, f.evidence, f.created_at,
                        a.activity_score, a.last_tweet_at, a.followers
                 FROM founders f
                 LEFT JOIN founder_activity a ON a.founder_id = f.id

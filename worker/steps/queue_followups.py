@@ -5,12 +5,12 @@ Rules:
     and was sent ≥ FOLLOWUP_INTERVAL_HOURS ago.
   - Max FOLLOWUP_DAYS follow-ups per thread (sequence ≤ FOLLOWUP_DAYS + 1).
   - Generated via Gemini with a follow-up-specific prompt.
-  - Inserted with review_status='pending' so human approves before send.
+  - Auto-approved if AUTO_APPROVE_DMS=True (matches initial DM behavior).
 """
 import os
 from datetime import datetime, timezone
 
-from config import FOLLOWUP_DAYS, FOLLOWUP_INTERVAL_HOURS
+from config import AUTO_APPROVE_DMS, FOLLOWUP_DAYS, FOLLOWUP_INTERVAL_HOURS
 from db import connect, init_db, start_run, update_run
 from logger import get_logger, get_tail
 
@@ -118,13 +118,14 @@ def run():
             log.warning(f"  {r['founder_name']}: empty follow-up, skipping")
             continue
 
+        review_status = "approved" if AUTO_APPROVE_DMS else "pending"
         with connect() as conn:
             conn.execute(
                 """INSERT INTO dms (founder_id, company_name, founder_name, twitter_handle,
                                     dm_text, char_count, thread_id, sequence, review_status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (r["founder_id"], r["company_name"], r["founder_name"], r["twitter_handle"],
-                 text, len(text), r["root_id"], next_seq),
+                 text, len(text), r["root_id"], next_seq, review_status),
             )
             conn.commit()
         log.info(f"[{i}/{total}] queued follow-up #{next_seq - 1} for @{r['twitter_handle']} ({len(text)} chars)")

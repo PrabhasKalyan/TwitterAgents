@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS founders (
   twitter_handle TEXT,
   handle_status TEXT DEFAULT 'pending',
   search_source TEXT,
+  confidence TEXT,
+  evidence TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -92,6 +94,8 @@ MIGRATIONS = [
     ("companies", "batch_status", "TEXT DEFAULT 'pending'"),
     ("companies", "batch_started_at", "DATETIME"),
     ("founders", "search_source", "TEXT"),
+    ("founders", "confidence", "TEXT"),
+    ("founders", "evidence", "TEXT"),
     ("dms", "thread_id", "INTEGER"),
     ("dms", "sequence", "INTEGER DEFAULT 1"),
     ("dms", "replied", "BOOLEAN DEFAULT 0"),

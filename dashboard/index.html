@@ -141,6 +141,11 @@
   .pill.act-unknown { background: rgba(91,100,115,0.18); color: var(--fg-mute); }
   .pill.seq { background: rgba(167,139,250,0.18); color: #c4b5fd; }
   .pill.replied { background: rgba(34,197,94,0.25); color: var(--ok); }
+  .pill.conf-high { background: rgba(34,197,94,0.22); color: var(--ok); }
+  .pill.conf-medium { background: rgba(56,189,248,0.18); color: var(--accent-2); }
+  .pill.conf-low { background: rgba(251,191,36,0.18); color: var(--warn); }
+  .evidence { font-size: 10px; color: var(--fg-mute); margin-top: 4px;
+              font-family: 'JetBrains Mono', monospace; word-break: break-all; }
 
   /* Logs */
   .log-window { background: #06080c; color: #cdd6e4; padding: 12px 14px;
@@ -479,6 +484,10 @@
     const seqPill = (d.sequence && d.sequence > 1)
       ? `<span class="pill seq">follow-up #${d.sequence - 1}</span>` : "";
     const repliedPill = d.replied ? `<span class="pill replied">replied</span>` : "";
+    const confPill = d.confidence
+      ? `<span class="pill conf-${d.confidence}">${d.confidence}</span>` : "";
+    const evidence = d.evidence
+      ? `<div class="evidence">${escapeHTML(d.evidence)}</div>` : "";
     const err = d.error_msg ? `<div style="color: var(--err); font-size: 11px; margin-top: 6px;">⚠ ${escapeHTML(d.error_msg)}</div>` : "";
     const lastTweet = d.last_tweet_at
       ? `<span class="co" style="font-size:11px;">· last tweet ${new Date(d.last_tweet_at.replace(' ','T')).toLocaleDateString()}</span>`
@@ -491,8 +500,9 @@
             <span class="co">${escapeHTML(d.company_name || "")}</span>
             ${lastTweet}
           </div>
-          <div>${actPill} ${seqPill} ${repliedPill} ${revPill} ${sendPill}</div>
+          <div>${confPill} ${actPill} ${seqPill} ${repliedPill} ${revPill} ${sendPill}</div>
         </div>
+        ${evidence}
         <textarea class="dm-text" ${editable ? "" : "readonly"}>${escapeHTML(d.dm_text || "")}</textarea>
         ${err}
         <div class="dm-meta">

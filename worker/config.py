@@ -45,3 +45,8 @@ WEBSITE_PAGE_TIMEOUT_MS = 20000
 
 # Auto-approve generated DMs (skip human review queue).
 AUTO_APPROVE_DMS = True
+
+# On worker boot: delete rows with handle_status='not_found' and reset their
+# companies to batch_status='pending'. Lets a code update / new method retry
+# previously-failed lookups without manually wiping the DB.
+RESET_NOT_FOUND_ON_STARTUP = True

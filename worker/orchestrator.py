@@ -14,7 +14,8 @@ Human review happens out-of-band in the dashboard between cycles.
 import time
 
 from config import (BATCH_SIZE, FOLLOWUP_QUEUE_INTERVAL,
-                    ORCHESTRATOR_IDLE_SLEEP, REPLY_CHECK_INTERVAL)
+                    ORCHESTRATOR_IDLE_SLEEP, REPLY_CHECK_INTERVAL,
+                    RESET_NOT_FOUND_ON_STARTUP)
 from db import connect, init_db
 from logger import get_logger
 from steps import (check_activity, check_replies, find_handles, generate_dms,
@@ -96,8 +97,50 @@ def run_once() -> bool:
     return True
 
 
+def _sweep_not_found():
+    """Delete all `not_found` founder rows and reset their companies to pending.
+    Runs once at worker boot so a newly-deployed find_handles method retries
+    previously-failed lookups without manually wiping the DB."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT company_id FROM founders "
+            "WHERE handle_status='not_found' AND company_id IS NOT NULL"
+        ).fetchall()
+        company_ids = [r["company_id"] for r in rows]
+        if not company_ids:
+            log.info("startup sweep: no not_found rows to clear")
+            return
+        # Only reset companies that have NO 'found' founders (don't disturb successful ones).
+        placeholders = ",".join("?" * len(company_ids))
+        keep_rows = conn.execute(
+            f"SELECT DISTINCT company_id FROM founders "
+            f"WHERE handle_status='found' AND company_id IN ({placeholders})",
+            company_ids,
+        ).fetchall()
+        keep_ids = {r["company_id"] for r in keep_rows}
+        retry_ids = [cid for cid in company_ids if cid not in keep_ids]
+        # Always delete the stale not_found rows (cheap, idempotent).
+        conn.execute(
+            f"DELETE FROM founders WHERE handle_status='not_found' "
+            f"AND company_id IN ({placeholders})",
+            company_ids,
+        )
+        if retry_ids:
+            placeholders2 = ",".join("?" * len(retry_ids))
+            conn.execute(
+                f"UPDATE companies SET batch_status='pending' "
+                f"WHERE id IN ({placeholders2}) AND batch_status != 'pending'",
+                retry_ids,
+            )
+        conn.commit()
+        log.info(f"startup sweep: cleared not_found rows for {len(company_ids)} "
+                 f"companies; {len(retry_ids)} reset to pending for retry")
+
+
 def loop():
     init_db()
+    if RESET_NOT_FOUND_ON_STARTUP:
+        _sweep_not_found()
     last_replies = 0.0
     last_followups = 0.0
     log.info(f"orchestrator started — batch_size={BATCH_SIZE}")

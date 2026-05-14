@@ -9,17 +9,68 @@ docker-compose.yml
 └── dashboard    Nginx — single-page dashboard, proxies /api
 ```
 
-## Run on a VM (one command)
-
-Everything is set up. From the project root on the VM:
+## Run on a VM
 
 ```bash
-docker compose up -d --build api dashboard && docker compose --profile worker up -d --build worker
+# 1. Build + start the API and dashboard (foreground services)
+docker compose up -d --build api dashboard
+
+# 2. (only if you previously ran with the old, low-accuracy code)
+#    Wipe stale founder/DM rows and reset batch progress.
+sqlite3 data/outreach.db "
+  DELETE FROM founders;
+  DELETE FROM dms;
+  UPDATE companies SET batch_status='pending';
+" 2>/dev/null
+
+# 3. Build + start the worker (runs the continuous orchestrator)
+docker compose --profile worker up -d --build worker
+
+# 4. Tail the logs
+docker compose logs -f worker
 ```
 
-That's it. The orchestrator runs continuously: it claims 20 companies, finds handles via DuckDuckGo, checks each founder's Twitter activity, generates DMs for active ones, sends approved ones (up to 100/day), then loops. Reply detection runs every 6 h; follow-ups are queued daily for 7 days per unreplied thread.
+If it's a brand-new VM and `data/outreach.db` doesn't exist yet, skip step 2 — it will be created on first run.
+
+To force a no-cache rebuild after pulling new code:
+
+```bash
+docker compose --profile worker down
+docker compose --profile worker build --no-cache worker
+docker compose --profile worker up -d worker
+```
 
 Open the dashboard at **http://&lt;VM_IP&gt;:3000**.
+
+## What the worker does (continuous loop)
+
+```
+filter (one-time from inputs/batches.csv)
+  ↓
+[claim next 20 filtered-in companies]
+  ↓
+find_handles   per founder:
+                 1. company website /team /about /founders pages → direct X links
+                 2. YC company page → direct X links + name candidates
+                 3. company's official X account → /following crawl (corroboration)
+                 4. Bing search (Playwright) — last resort
+               verify every candidate: bio mentions company OR follows company X
+               assign confidence: high | medium | low
+               follow the founder on X
+  ↓
+check_activity  visit profile → last_tweet_at → bucket: active | semi | dormant | dead
+  ↓
+generate_dms    Gemini drafts; skips 'dead' founders; AUTO-APPROVED
+  ↓
+send_dms        respects DAILY_LIMIT, longer pacing
+  ↓
+mark batch done, loop
+
+every 6 h:  check_replies   scan x.com/messages, mark dms.replied=1
+every 24 h: queue_followups daily follow-ups for unreplied threads (7 days)
+```
+
+State lives in SQLite (`/data/outreach.db`). Restart-safe — the orchestrator resumes from `companies.batch_status`.
 
 ## Manual one-shot steps (optional)
 
@@ -34,52 +85,42 @@ docker compose --profile worker run --rm worker python run.py --step check-repli
 docker compose --profile worker run --rm worker python run.py --step queue-followups
 ```
 
-## Architecture (batched, continuous)
+## Tunables — edit `worker/config.py`, then rebuild
 
-```
-filter (one-time)
-  ↓
-[claim next 20 filtered companies]
-  ↓
-find_handles    DuckDuckGo HTML → verify on x.com → x.com fallback
-  ↓
-check_activity  visit profile → last_tweet_at → score active|semi|dormant|dead
-  ↓
-generate_dms    Gemini drafts; skips 'dead' founders
-  ↓
-[human review in dashboard]
-  ↓
-send_dms        approved only, respects DAILY_LIMIT
-  ↓
-mark batch done, loop
+| Constant                       | Default | Purpose                                              |
+| ------------------------------ | ------- | ---------------------------------------------------- |
+| `BATCH_SIZE`                   | 20      | Companies per micro-pipeline cycle                   |
+| `DAILY_LIMIT`                  | 100     | DMs sent per UTC day (incl. follow-ups)              |
+| `FOLLOWUP_DAYS`                | 7       | Daily follow-ups per unreplied thread                |
+| `FOLLOWUP_INTERVAL_HOURS`      | 24      | Min hours between consecutive messages in a thread   |
+| `ACTIVITY_DORMANT_DAYS`        | 90      | `>this` since last tweet ⇒ 'dead' (skip DM)          |
+| `SEND_DELAY_MIN/MAX`           | 180/360 | Seconds between sends                                |
+| `ORCHESTRATOR_IDLE_SLEEP`      | 1800    | Sleep when no work to claim                          |
+| `FOLLOW_AFTER_VERIFY`          | True    | Follow founder's handle after verifying              |
+| `AUTO_APPROVE_DMS`             | True    | Skip human review — send picks DMs up immediately    |
+| `MIN_FOLLOWERS_FOR_NAME_ONLY`  | 50      | Reject imposters when only name match is available   |
+| `COMPANY_FOLLOWING_CRAWL`      | 60      | Rows of company X /following to scan per company     |
+| `MAX_TEAM_PAGES_PER_COMPANY`   | 4       | Cap website team-page visits per company             |
 
-every 6 h:  check_replies   scan x.com/messages, mark dms.replied=1
-every 24 h: queue_followups generate sequence 2..8 for unreplied threads
-```
+## Handle confidence levels
 
-State lives in SQLite (`/data/outreach.db`). Restart-safe — the orchestrator resumes from `companies.batch_status`.
+Every found handle is graded and the grade is shown on the dashboard:
 
-## Tunables
+| Level    | What triggered it                                                        |
+| -------- | ------------------------------------------------------------------------ |
+| `high`   | Direct link from YC card OR company website team page, **or** bio mentions company name / website domain |
+| `medium` | Profile follows the company's X account AND display-name token overlap ≥ 0.5 |
+| `low`    | Display-name token overlap ≥ 2/3 AND ≥ 50 followers                      |
 
-Edit `worker/config.py` and rebuild:
-
-| Constant                  | Default | Purpose                              |
-| ------------------------- | ------- | ------------------------------------ |
-| `BATCH_SIZE`              | 20      | Companies per micro-pipeline cycle   |
-| `DAILY_LIMIT`             | 100     | DMs sent per UTC day                 |
-| `FOLLOWUP_DAYS`           | 7       | Max follow-ups per thread (daily)    |
-| `ACTIVITY_DORMANT_DAYS`   | 90      | `>this` since last tweet → 'dead'    |
-| `SEND_DELAY_MIN/MAX`      | 180/360 | Seconds between sends                |
-| `ORCHESTRATOR_IDLE_SLEEP` | 1800    | Sleep when no work to claim          |
+Anything below `low` is rejected (`handle_status='not_found'`). Each row has an `evidence` field recording which signal won, surfaced on every DM card.
 
 ## Safety rails (hard-coded)
 
-- `DAILY_LIMIT` enforced both at start-of-run and re-checked between every send
+- `DAILY_LIMIT` enforced at start and re-checked between every send
 - Never sends to a `(handle, sequence)` already marked `sent`
-- Only sends rows with `review_status = approved`
-- `generate_dms.py` skips founders already in `dms`
-- `generate_dms.py` skips founders scored `dead`
-- Playwright takes a screenshot to `/data/screenshots/` on every send failure
+- Only sends rows with `review_status = approved` (which is now the default for generated DMs)
+- `generate_dms.py` skips founders already in `dms` and founders scored `dead`
+- Playwright screenshots every send failure to `/data/screenshots/`
 - Follow-ups stop the moment `replied=1`
 
 ## Files
@@ -111,12 +152,12 @@ project/
 
 ```bash
 git clone <repo> outreach && cd outreach
-cp .env.example .env && vim .env                                       # GEMINI_API_KEY
+cp .env.example .env && vim .env                                   # set GEMINI_API_KEY
 cp inputs/twitter_credentials.json.example inputs/twitter_credentials.json
-vim inputs/twitter_credentials.json                                    # auth_token + ct0
+vim inputs/twitter_credentials.json                                # auth_token + ct0
 docker compose up -d --build api dashboard
 docker compose --profile worker run --rm worker python run.py --step filter
-docker compose --profile worker up -d --build worker                   # start the loop
+docker compose --profile worker up -d --build worker
 ```
 
 Open port **3000**. Port 8000 stays internal; nginx proxies `/api/*` to it.
@@ -138,3 +179,20 @@ tail -f logs/outreach.log
 ```
 
 The dashboard streams the worker log live via SSE.
+
+## Common operational commands
+
+```bash
+# Resume after a code change (no DB wipe)
+docker compose --profile worker down && docker compose --profile worker up -d --build worker
+
+# Full reset of pipeline state (keeps filtered companies, retries everything else)
+sqlite3 data/outreach.db "DELETE FROM founders; DELETE FROM dms; UPDATE companies SET batch_status='pending';"
+
+# Nuclear reset (re-run filter from batches.csv)
+rm data/outreach.db data/outreach.db-wal data/outreach.db-shm
+docker compose --profile worker run --rm worker python run.py --step filter
+
+# Free port 8000 if it's stuck
+docker rm -f outreach-api 2>/dev/null && docker compose up -d api
+```

@@ -152,6 +152,22 @@ async def _safe_goto(page, url: str, timeout: int = WEBSITE_PAGE_TIMEOUT_MS) -> 
         return False
 
 
+async def _safe_eval(page, js: str, default, *args):
+    """Wrap page.evaluate — pages can navigate/redirect mid-eval (Bing especially)
+    and that raises 'Execution context was destroyed'. Return `default` on any error."""
+    try:
+        if args:
+            return await page.evaluate(js, *args)
+        return await page.evaluate(js)
+    except Exception as e:
+        msg = str(e)
+        if "Execution context was destroyed" in msg or "navigation" in msg.lower():
+            log.warning(f"  eval lost context (page navigated); skipping")
+        else:
+            log.warning(f"  eval failed: {type(e).__name__}: {msg[:120]}")
+        return default
+
+
 async def _find_team_page_urls(page, website: str) -> list[str]:
     """Visit homepage, return a list of likely team-page URLs (homepage + linked /team etc)."""
     if not website:
@@ -161,7 +177,8 @@ async def _find_team_page_urls(page, website: str) -> list[str]:
     if not await _safe_goto(page, website):
         return []
     base = page.url.rstrip("/")
-    found = await page.evaluate(
+    found = await _safe_eval(
+        page,
         """(teamPaths) => {
             const out = new Set();
             const lower = teamPaths.map(p => p.toLowerCase());
@@ -177,6 +194,7 @@ async def _find_team_page_urls(page, website: str) -> list[str]:
             }
             return Array.from(out);
         }""",
+        [],
         TEAM_PATHS,
     )
     urls = [base]
@@ -190,7 +208,8 @@ async def _scrape_name_handle_pairs(page, url: str) -> list[dict]:
     """Extract (name, handle) candidates by walking up from each twitter link."""
     if not await _safe_goto(page, url):
         return []
-    raw = await page.evaluate(
+    raw = await _safe_eval(
+        page,
         """() => {
             const out = [];
             for (const a of document.querySelectorAll('a[href*="twitter.com/"], a[href*="x.com/"]')) {
@@ -216,7 +235,8 @@ async def _scrape_name_handle_pairs(page, url: str) -> list[dict]:
                 out.push({ href, name: nameGuess });
             }
             return out;
-        }"""
+        }""",
+        [],
     )
     pairs = []
     seen_handles = set()
@@ -247,7 +267,8 @@ async def _scrape_yc_founder_pairs(page, yc_url: str) -> list[dict]:
     """
     if not await _safe_goto(page, yc_url):
         return []
-    data = await page.evaluate(
+    data = await _safe_eval(
+        page,
         """() => {
             const out = [];
             const seen = new Set();
@@ -284,7 +305,8 @@ async def _scrape_yc_founder_pairs(page, yc_url: str) -> list[dict]:
                 out.push({ kind: 'name', name: t });
             }
             return out;
-        }"""
+        }""",
+        [],
     )
     pairs = []
     seen_handles = set()
@@ -328,7 +350,8 @@ async def _company_x_handle_from_website(page, website: str, company_name: str) 
         website = "https://" + website
     if not await _safe_goto(page, website):
         return None
-    handles = await page.evaluate(
+    handles = await _safe_eval(
+        page,
         """() => {
             const out = new Set();
             for (const a of document.querySelectorAll('a[href*="twitter.com/"], a[href*="x.com/"]')) {
@@ -338,7 +361,8 @@ async def _company_x_handle_from_website(page, website: str, company_name: str) 
                 if (m) out.add(m[1].toLowerCase());
             }
             return Array.from(out);
-        }"""
+        }""",
+        [],
     )
     if not handles:
         return None
@@ -365,12 +389,14 @@ async def _company_x_handle_via_search(page, company_name: str, website: str) ->
     q = urllib.parse.quote(company_name)
     if not await _safe_goto(page, f"https://x.com/search?q={q}&f=user", 25000):
         return None
-    cells = await page.evaluate(
+    cells = await _safe_eval(
+        page,
         """() => Array.from(document.querySelectorAll('[data-testid="UserCell"]')).slice(0, 6).map(c => {
             const a = c.querySelector('a[href^="/"]');
             const m = a && (a.getAttribute('href') || '').match(/^\\/([A-Za-z0-9_]{2,15})$/);
             return { handle: m ? m[1] : null, text: (c.innerText || '').toLowerCase() };
-        })"""
+        })""",
+        [],
     )
     for c in cells:
         h = c.get("handle")
@@ -393,9 +419,13 @@ async def _company_following(page, co_handle: str) -> list[dict]:
         return []
     # Scroll a few times to load more
     for _ in range(3):
-        await page.mouse.wheel(0, 1500)
+        try:
+            await page.mouse.wheel(0, 1500)
+        except Exception:
+            break
         await page.wait_for_timeout(800)
-    rows = await page.evaluate(
+    rows = await _safe_eval(
+        page,
         """(limit) => {
             const cells = Array.from(document.querySelectorAll('[data-testid="UserCell"]')).slice(0, limit);
             return cells.map(c => {
@@ -411,6 +441,7 @@ async def _company_following(page, co_handle: str) -> list[dict]:
                 };
             }).filter(r => r.handle);
         }""",
+        [],
         COMPANY_FOLLOWING_CRAWL,
     )
     return rows
@@ -422,9 +453,11 @@ async def _bing_handles(page, query: str) -> list[str]:
     url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
     if not await _safe_goto(page, url, 25000):
         return []
-    hrefs = await page.evaluate(
+    hrefs = await _safe_eval(
+        page,
         """() => Array.from(document.querySelectorAll('a[href]'))
-            .map(a => a.href).filter(h => /(?:x|twitter)\\.com\\//i.test(h))"""
+            .map(a => a.href).filter(h => /(?:x|twitter)\\.com\\//i.test(h))""",
+        [],
     )
     out, seen = [], set()
     for href in hrefs:
@@ -450,7 +483,8 @@ async def _profile_signals(page, handle: str) -> dict | None:
         await page.wait_for_timeout(1800)
     except Exception:
         return None
-    sig = await page.evaluate(
+    sig = await _safe_eval(
+        page,
         """() => {
             const body = (document.body.innerText || '').toLowerCase();
             if (body.includes("this account doesn't exist") || body.includes("this account doesn’t exist")) {
@@ -475,7 +509,8 @@ async def _profile_signals(page, handle: str) -> dict | None:
                 break;
             }
             return {exists: true, displayName, bio, followers};
-        }"""
+        }""",
+        None,
     )
     return sig
 
@@ -511,7 +546,8 @@ async def _follow_handle(page, handle: str) -> bool:
         if f"/{handle}" not in page.url:
             await page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=20000)
             await page.wait_for_timeout(1200)
-        clicked = await page.evaluate(
+        clicked = await _safe_eval(
+            page,
             """() => {
                 const btns = Array.from(document.querySelectorAll('[data-testid$="-follow"], [role="button"]'));
                 for (const b of btns) {
@@ -519,7 +555,8 @@ async def _follow_handle(page, handle: str) -> bool:
                     if (txt === 'Follow') { b.click(); return true; }
                 }
                 return false;
-            }"""
+            }""",
+            False,
         )
         if clicked:
             await page.wait_for_timeout(1000)

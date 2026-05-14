@@ -1,23 +1,22 @@
-"""Find Twitter handles via DuckDuckGo first, then x.com search as fallback.
+"""Find Twitter handles. Strategy in priority order:
 
-Per founder:
-  1. Scrape YC page for founder names (Playwright).
-  2. For each name, query DDG HTML for `"<name>" "<company>" site:x.com OR site:twitter.com`.
-  3. Parse top hits, extract candidate handles. Pick the best.
-  4. Verify the handle's profile loads on x.com.
-  5. If DDG finds nothing, fall back to x.com user search.
+  1. **YC page direct links** — most YC company pages embed founder X/Twitter links
+     right on the founder card. Cheapest, highest-confidence signal.
+  2. **Bing search via Playwright** — render bing.com/search in the real browser
+     and pull twitter.com/x.com result URLs. Far more permissive than DDG-HTML
+     (which 403s from cloud IPs).
+  3. **x.com user search** — last resort if both above fail.
+
+After a handle is verified, optionally click Follow on x.com.
 """
 import asyncio
-import html
 import json
 import os
 import random
 import re
 import urllib.parse
 
-import httpx
-
-from config import SEARCH_DELAY_MAX, SEARCH_DELAY_MIN
+from config import FOLLOW_AFTER_VERIFY, SEARCH_DELAY_MAX, SEARCH_DELAY_MIN
 from db import connect, init_db, start_run, update_run
 from logger import get_logger, get_tail
 
@@ -25,16 +24,28 @@ log = get_logger()
 
 CREDS_PATH = os.environ.get("TW_CREDS", "/inputs/twitter_credentials.json")
 
-DDG_URL = "https://html.duckduckgo.com/html/"
-HANDLE_RE = re.compile(r"(?:x\.com|twitter\.com)/(?!i/|search|home|messages|notifications|explore|hashtag|intent|share)([A-Za-z0-9_]{2,15})(?:/|$|\?)")
+HANDLE_RE = re.compile(
+    r"(?:x\.com|twitter\.com)/(?!i/|search|home|messages|notifications|explore|hashtag|"
+    r"intent|share|compose|settings|login|signup|tos|privacy|about|jobs|press)"
+    r"([A-Za-z0-9_]{2,15})(?:/|$|\?|#)"
+)
 RESERVED_HANDLES = {"home", "explore", "search", "messages", "notifications", "i",
                     "intent", "share", "hashtag", "compose", "settings", "login",
-                    "signup", "tos", "privacy", "about", "jobs", "press"}
+                    "signup", "tos", "privacy", "about", "jobs", "press",
+                    "status", "ycombinator"}
+
+# Words that signal a non-name string (pitch-deck headers, navigation, etc.)
+NAME_BLACKLIST_SUBSTR = [
+    "founder", "team", "company", "about", "active", "hiring", "jobs",
+    "solution", "problem", "news", "latest", "make something", "the team",
+    "our ", "the problem", "the solution", "contact", "demo", "pitch",
+    "subscribe", "newsletter", "investor", "press", "what we",
+]
 
 
 def _load_cookies():
     if not os.path.exists(CREDS_PATH):
-        log.warning(f"No twitter_credentials.json at {CREDS_PATH} — fallback search may fail")
+        log.warning(f"No twitter_credentials.json at {CREDS_PATH} — cannot use x.com")
         return None
     with open(CREDS_PATH) as f:
         c = json.load(f)
@@ -46,74 +57,138 @@ def _load_cookies():
     ]
 
 
-async def _extract_founders_from_yc(page, yc_url: str):
+def _looks_like_name(s: str) -> bool:
+    s = s.strip()
+    if len(s) < 4 or len(s) > 60:
+        return False
+    if any(ch.isdigit() for ch in s):
+        return False
+    low = s.lower()
+    if any(w in low for w in NAME_BLACKLIST_SUBSTR):
+        return False
+    # Must contain at least one ASCII letter group
+    if not re.search(r"[A-Za-z]{2,}", s):
+        return False
+    # Strip leading emojis / punctuation, require ≥2 alpha tokens
+    clean = re.sub(r"[^\w\s\-']", " ", s).strip()
+    parts = [p for p in clean.split() if any(c.isalpha() for c in p)]
+    if not (2 <= len(parts) <= 5):
+        return False
+    # Each token should start with a letter
+    if not all(p[0].isalpha() for p in parts):
+        return False
+    return True
+
+
+async def _scrape_yc_founders(page, yc_url: str) -> list[dict]:
+    """Return [{name, twitter_handle | None}] extracted from YC founder cards."""
     try:
         await page.goto(yc_url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(1500)
-        names = await page.evaluate(
+        await page.wait_for_timeout(1800)
+        data = await page.evaluate(
             """() => {
+                // Find sections/blocks that look like founder cards.
                 const out = [];
-                document.querySelectorAll('h3, .font-bold, [class*="founder"]').forEach(el => {
-                    const t = (el.innerText || '').trim();
-                    if (t && t.split(' ').length >= 2 && t.split(' ').length <= 5 && !/[0-9]/.test(t)) {
-                        out.push(t);
+                const containers = Array.from(document.querySelectorAll(
+                    '[class*="founder"], [class*="Founder"], section, div'
+                ));
+                const seen = new Set();
+                for (const el of containers) {
+                    const txt = (el.innerText || '').trim();
+                    if (!txt || txt.length > 600) continue;
+                    // Look inside for a Twitter/X link
+                    const a = el.querySelector('a[href*="twitter.com/"], a[href*="x.com/"]');
+                    if (!a) continue;
+                    const href = a.getAttribute('href') || '';
+                    // Try to find a name above the link: the first short text line in this block.
+                    const lines = txt.split('\\n').map(s => s.trim()).filter(Boolean);
+                    let candidate = '';
+                    for (const line of lines) {
+                        if (line.length >= 4 && line.length <= 60 && /[A-Za-z]/.test(line)) {
+                            candidate = line;
+                            break;
+                        }
                     }
-                });
+                    const key = candidate + '|' + href;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    out.push({ name: candidate, href });
+                }
+                // Fallback: collect generic h3 names if no founder cards were found.
+                if (out.length === 0) {
+                    document.querySelectorAll('h3, .font-bold').forEach(el => {
+                        const t = (el.innerText || '').trim();
+                        if (t) out.push({ name: t, href: null });
+                    });
+                }
                 return out;
             }"""
         )
-        seen, out = set(), []
-        for n in names:
-            n = n.strip()
-            if n in seen or len(n) > 60 or len(n) < 4:
+
+        results = []
+        seen_names, seen_handles = set(), set()
+        for item in data:
+            name = (item.get("name") or "").strip()
+            href = item.get("href") or ""
+            handle = None
+            if href:
+                m = HANDLE_RE.search(href)
+                if m:
+                    h = m.group(1)
+                    if h.lower() not in RESERVED_HANDLES:
+                        handle = h
+            if name and not _looks_like_name(name):
+                # If name is junk but we have a handle, keep the handle with an empty name.
+                if not handle:
+                    continue
+                name = ""
+            if not name and not handle:
                 continue
-            low = n.lower()
-            if any(w in low for w in ["founder", "team", "company", "about", "active", "hiring", "jobs"]):
+            key_n = name.lower()
+            if name and key_n in seen_names:
                 continue
-            seen.add(n)
-            out.append(n)
-        return out[:5]
+            if handle and handle in seen_handles:
+                continue
+            if name:
+                seen_names.add(key_n)
+            if handle:
+                seen_handles.add(handle)
+            results.append({"name": name, "twitter_handle": handle})
+
+        return results[:6]
     except Exception as e:
         log.warning(f"YC scrape failed for {yc_url}: {e}")
         return []
 
 
-def _ddg_search(query: str) -> list[str]:
-    """POST to DDG HTML, return candidate handles in order of appearance."""
+async def _bing_search(page, query: str) -> list[str]:
+    """Render bing.com/search in Playwright; extract twitter/x handles from results."""
+    url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
     try:
-        with httpx.Client(timeout=15.0, follow_redirects=True,
-                          headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                                                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0"}) as c:
-            r = c.post(DDG_URL, data={"q": query})
-            r.raise_for_status()
-            body = r.text
+        await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+        await page.wait_for_timeout(random.uniform(1200, 2000))
+        hrefs = await page.evaluate(
+            """() => Array.from(document.querySelectorAll('a[href]'))
+                .map(a => a.href).filter(h => /(?:x|twitter)\\.com\\//i.test(h))"""
+        )
     except Exception as e:
-        log.warning(f"DDG query failed: {e}")
+        log.warning(f"Bing query failed: {e}")
         return []
 
-    # DDG wraps result links in /l/?uddg=<encoded>. Pull and decode.
-    handles, seen = [], set()
-    for m in re.finditer(r'href="(/l/\?[^"]*uddg=([^&"]+)[^"]*)"', body):
-        raw = urllib.parse.unquote(m.group(2))
-        # Also handle plaintext links (some DDG variants)
-        for hm in HANDLE_RE.finditer(raw):
-            h = hm.group(1)
-            if h.lower() in RESERVED_HANDLES or h in seen:
-                continue
-            seen.add(h)
-            handles.append(h)
-    # Also scan body directly in case redirect wasn't matched
-    for hm in HANDLE_RE.finditer(html.unescape(body)):
-        h = hm.group(1)
+    out, seen = [], set()
+    for href in hrefs:
+        m = HANDLE_RE.search(href)
+        if not m:
+            continue
+        h = m.group(1)
         if h.lower() in RESERVED_HANDLES or h in seen:
             continue
         seen.add(h)
-        handles.append(h)
-    return handles[:10]
+        out.append(h)
+    return out[:8]
 
 
 async def _verify_handle(page, handle: str, founder_name: str, company_name: str) -> bool:
-    """Load x.com/<handle>; check it exists and bio/name plausibly matches."""
     try:
         await page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=25000)
         await page.wait_for_timeout(1800)
@@ -122,17 +197,41 @@ async def _verify_handle(page, handle: str, founder_name: str, company_name: str
             return False
         if "account suspended" in text:
             return False
-        # Plausibility: name parts OR company name appears
-        fname_parts = [p for p in founder_name.lower().split() if len(p) >= 3]
-        if any(p in text for p in fname_parts):
+        name_parts = [p for p in (founder_name or "").lower().split() if len(p) >= 3]
+        if name_parts and any(p in text for p in name_parts):
             return True
         if company_name and company_name.lower() in text:
             return True
-        # Profile loaded but no match → still accept if it has a UserName cell (might be obscure)
         has_user = await page.locator('[data-testid="UserName"]').count()
         return has_user > 0
     except Exception as e:
         log.warning(f"verify failed for @{handle}: {e}")
+        return False
+
+
+async def _follow_handle(page, handle: str) -> bool:
+    """Click the Follow button if not already following. Assumes profile is loaded."""
+    try:
+        # If we just verified, we're already on the profile. Otherwise navigate.
+        if f"/{handle}" not in page.url:
+            await page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(1500)
+        # Try the Follow button (NOT 'Following' which appears post-follow).
+        clicked = await page.evaluate(
+            """() => {
+                const btns = Array.from(document.querySelectorAll('[data-testid$="-follow"], [role="button"]'));
+                for (const b of btns) {
+                    const txt = (b.innerText || '').trim();
+                    if (txt === 'Follow') { b.click(); return true; }
+                }
+                return false;
+            }"""
+        )
+        if clicked:
+            await page.wait_for_timeout(1200)
+        return bool(clicked)
+    except Exception as e:
+        log.warning(f"follow failed for @{handle}: {e}")
         return False
 
 
@@ -158,20 +257,22 @@ async def _x_fallback_search(page, founder_name: str, company_name: str) -> str 
 
 
 async def _find_one(page, founder_name: str, company_name: str) -> tuple[str | None, str]:
-    """Return (handle, source) where source in {'ddg','x_fallback',''}."""
-    query = f'"{founder_name}" "{company_name}" (site:x.com OR site:twitter.com)'
-    candidates = _ddg_search(query)
-    await asyncio.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
-
-    if not candidates:
-        # Try looser query
-        candidates = _ddg_search(f'"{founder_name}" {company_name} site:x.com')
-        await asyncio.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
-
-    for h in candidates[:5]:
-        if await _verify_handle(page, h, founder_name, company_name):
-            return h, "ddg"
-        await asyncio.sleep(random.uniform(1.0, 2.0))
+    """Return (handle, source). Source: 'yc_direct'|'bing'|'x_fallback'|''."""
+    # Bing first: query name + company
+    if founder_name:
+        for query in [
+            f'"{founder_name}" "{company_name}" (site:x.com OR site:twitter.com)',
+            f'"{founder_name}" {company_name} site:x.com',
+            f'{founder_name} {company_name} twitter',
+        ]:
+            cands = await _bing_search(page, query)
+            await asyncio.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
+            for h in cands[:5]:
+                if await _verify_handle(page, h, founder_name, company_name):
+                    return h, "bing"
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+            if cands:
+                break  # Found candidates but none verified — don't keep hammering bing
 
     handle = await _x_fallback_search(page, founder_name, company_name)
     if handle and await _verify_handle(page, handle, founder_name, company_name):
@@ -180,7 +281,6 @@ async def _find_one(page, founder_name: str, company_name: str) -> tuple[str | N
 
 
 async def _async_run(company_ids: list[int] | None = None):
-    """If company_ids is provided, process only those. Otherwise process all unhandled."""
     from playwright.async_api import async_playwright
 
     init_db()
@@ -200,7 +300,7 @@ async def _async_run(company_ids: list[int] | None = None):
 
     total = len(companies)
     run_id = start_run("find_handles", total=total)
-    log.info(f"find_handles: {total} companies (DDG-first)")
+    log.info(f"find_handles: {total} companies (YC-direct → Bing → x.com fallback)")
 
     cookies = _load_cookies()
 
@@ -217,12 +317,13 @@ async def _async_run(company_ids: list[int] | None = None):
 
         for i, comp in enumerate(companies, 1):
             log.info(f"[{i}/{total}] {comp['name']}")
-            founders = []
+            yc_results = []
             if comp["yc_url"]:
-                founders = await _extract_founders_from_yc(page, comp["yc_url"])
-                log.info(f"  YC: {len(founders)} candidate founder name(s)")
+                yc_results = await _scrape_yc_founders(page, comp["yc_url"])
+                direct = sum(1 for r in yc_results if r["twitter_handle"])
+                log.info(f"  YC: {len(yc_results)} candidate(s), {direct} direct X link(s)")
 
-            if not founders:
+            if not yc_results:
                 with connect() as conn:
                     conn.execute(
                         "INSERT INTO founders (company_id, company_name, founder_name, handle_status) "
@@ -230,21 +331,44 @@ async def _async_run(company_ids: list[int] | None = None):
                         (comp["id"], comp["name"], ""),
                     )
                     conn.commit()
-            else:
-                for fname in founders:
+                update_run(run_id, processed=i, log_tail=get_tail())
+                continue
+
+            for item in yc_results:
+                fname = item["name"]
+                direct_handle = item["twitter_handle"]
+                handle, source = (None, "")
+
+                if direct_handle:
+                    # Verify the direct link still resolves; if so, accept without search.
+                    if await _verify_handle(page, direct_handle, fname, comp["name"]):
+                        handle, source = direct_handle, "yc_direct"
+
+                if not handle and fname:
                     handle, source = await _find_one(page, fname, comp["name"])
-                    status = "found" if handle else "not_found"
-                    with connect() as conn:
-                        conn.execute(
-                            "INSERT INTO founders (company_id, company_name, founder_name, "
-                            "twitter_handle, handle_status, search_source) "
-                            "VALUES (?, ?, ?, ?, ?, ?)",
-                            (comp["id"], comp["name"], fname, handle, status, source or None),
-                        )
-                        conn.commit()
-                    badge = f"@{handle} ({source})" if handle else "(not found)"
-                    log.info(f"  {fname} -> {badge}")
-                    await asyncio.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
+
+                status = "found" if handle else "not_found"
+                followed = False
+                if handle and FOLLOW_AFTER_VERIFY:
+                    followed = await _follow_handle(page, handle)
+
+                with connect() as conn:
+                    conn.execute(
+                        "INSERT INTO founders (company_id, company_name, founder_name, "
+                        "twitter_handle, handle_status, search_source) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (comp["id"], comp["name"], fname or "(from YC link)",
+                         handle, status, source or None),
+                    )
+                    conn.commit()
+
+                if handle:
+                    follow_msg = " [followed]" if followed else (" [follow failed]" if FOLLOW_AFTER_VERIFY else "")
+                    log.info(f"  {fname or '(?)'} -> @{handle} ({source}){follow_msg}")
+                else:
+                    log.info(f"  {fname or '(?)'} -> (not found)")
+
+                await asyncio.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
 
             update_run(run_id, processed=i, log_tail=get_tail())
 

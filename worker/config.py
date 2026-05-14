@@ -30,3 +30,6 @@ ORCHESTRATOR_IDLE_SLEEP = 1800
 # How often (seconds) to run reply-check + follow-up queue inside the loop.
 REPLY_CHECK_INTERVAL = 6 * 3600
 FOLLOWUP_QUEUE_INTERVAL = 24 * 3600
+
+# After verifying a handle in find_handles, click the Follow button on x.com.
+FOLLOW_AFTER_VERIFY = True

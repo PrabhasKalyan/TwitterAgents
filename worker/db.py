@@ -6,13 +6,13 @@ from datetime import date
 
 DB_PATH = os.environ.get("DATABASE_URL", "/data/outreach.db")
 
-SCHEMA = """
+TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS companies (
   id INTEGER PRIMARY KEY,
   name TEXT, one_liner TEXT, tags TEXT, website TEXT,
   yc_url TEXT, team_size INTEGER, status TEXT, stage TEXT, is_hiring BOOLEAN,
   filtered_in BOOLEAN DEFAULT FALSE,
-  batch_status TEXT DEFAULT 'pending',  -- pending|processing|done
+  batch_status TEXT DEFAULT 'pending',
   batch_started_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS founders (
   founder_name TEXT,
   twitter_handle TEXT,
   handle_status TEXT DEFAULT 'pending',
-  search_source TEXT,  -- 'ddg' | 'x_fallback' | null
+  search_source TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS founder_activity (
   tweet_count_recent INTEGER,
   followers INTEGER,
   following INTEGER,
-  activity_score TEXT,  -- active|semi_active|dormant|dead|unknown
+  activity_score TEXT,
   checked_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS dms (
   sent_at DATETIME,
   error_msg TEXT,
   screenshot_path TEXT,
-  thread_id INTEGER,         -- id of the initial DM in this thread (self-id for initial)
-  sequence INTEGER DEFAULT 1, -- 1 = initial, 2..8 = follow-ups
+  thread_id INTEGER,
+  sequence INTEGER DEFAULT 1,
   replied BOOLEAN DEFAULT 0,
   reply_checked_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -75,7 +75,9 @@ CREATE TABLE IF NOT EXISTS daily_send_log (
   count INTEGER DEFAULT 0,
   UNIQUE(date)
 );
+"""
 
+INDEXES_SQL = """
 CREATE INDEX IF NOT EXISTS idx_companies_filtered ON companies(filtered_in);
 CREATE INDEX IF NOT EXISTS idx_companies_batch ON companies(batch_status);
 CREATE INDEX IF NOT EXISTS idx_founders_status ON founders(handle_status);
@@ -108,8 +110,12 @@ def _migrate(conn):
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with connect() as conn:
-        conn.executescript(SCHEMA)
+        # 1) Tables (CREATE IF NOT EXISTS is a no-op on existing tables).
+        conn.executescript(TABLES_SQL)
+        # 2) Add any missing columns on older DBs BEFORE creating indexes that reference them.
         _migrate(conn)
+        # 3) Indexes (safe now that columns exist).
+        conn.executescript(INDEXES_SQL)
         conn.commit()
 
 

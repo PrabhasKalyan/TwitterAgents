@@ -76,6 +76,7 @@ State lives in SQLite (`/data/outreach.db`). Restart-safe — the orchestrator r
 ```bash
 docker compose --profile worker run --rm worker python run.py --step filter
 docker compose --profile worker run --rm worker python run.py --step find-handles
+docker compose --profile worker run --rm worker python run.py --step follow-founders
 docker compose --profile worker run --rm worker python run.py --step check-activity
 docker compose --profile worker run --rm worker python run.py --step generate-dms
 docker compose --profile worker run --rm worker python run.py --step send --dry-run

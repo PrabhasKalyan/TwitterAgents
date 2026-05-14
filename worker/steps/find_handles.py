@@ -721,14 +721,20 @@ async def _async_run(company_ids: list[int] | None = None):
                 if handle and FOLLOW_AFTER_VERIFY:
                     followed = await _follow_handle(page, handle)
 
+                follow_status = None
+                if handle and FOLLOW_AFTER_VERIFY:
+                    follow_status = "followed" if followed else "failed"
+
                 with connect() as conn:
                     conn.execute(
                         "INSERT INTO founders (company_id, company_name, founder_name, "
-                        "twitter_handle, handle_status, search_source, confidence, evidence) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        "twitter_handle, handle_status, search_source, confidence, evidence, "
+                        "follow_status, followed_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                        "CASE WHEN ?='followed' THEN CURRENT_TIMESTAMP ELSE NULL END)",
                         (comp_d["id"], comp_d["name"], fname, handle, status,
                          result["source"] or None, result["confidence"] or None,
-                         result["evidence"]),
+                         result["evidence"], follow_status, follow_status),
                     )
                     conn.commit()
 

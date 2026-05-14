@@ -6,7 +6,7 @@ from logger import get_logger
 
 log = get_logger()
 
-STEPS = ["filter", "find-handles", "check-activity", "generate-dms",
+STEPS = ["filter", "find-handles", "follow-founders", "check-activity", "generate-dms",
          "check-replies", "queue-followups", "send"]
 
 
@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="For --step send: do not actually send")
     parser.add_argument("--confirm-send", action="store_true",
                         help="With --all, also run send (otherwise skipped)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="For --step follow-founders: cap number of follow actions")
     args = parser.parse_args()
 
     if not args.step and not args.all and not args.loop:
@@ -56,6 +58,9 @@ def main():
     elif args.step == "find-handles":
         from steps import find_handles
         find_handles.run()
+    elif args.step == "follow-founders":
+        from steps import follow_founders
+        follow_founders.run(limit=args.limit)
     elif args.step == "check-activity":
         from steps import check_activity
         check_activity.run()

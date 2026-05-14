@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS founders (
   search_source TEXT,
   confidence TEXT,
   evidence TEXT,
+  followed_at DATETIME,
+  follow_status TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -96,6 +98,8 @@ MIGRATIONS = [
     ("founders", "search_source", "TEXT"),
     ("founders", "confidence", "TEXT"),
     ("founders", "evidence", "TEXT"),
+    ("founders", "followed_at", "DATETIME"),
+    ("founders", "follow_status", "TEXT"),
     ("dms", "thread_id", "INTEGER"),
     ("dms", "sequence", "INTEGER DEFAULT 1"),
     ("dms", "replied", "BOOLEAN DEFAULT 0"),

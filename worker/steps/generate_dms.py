@@ -1,4 +1,10 @@
-"""Generate DM drafts using Gemini for each founder with a found handle."""
+"""Generate initial DM drafts for active/semi-active founders.
+
+Skips:
+  - founders with no found handle
+  - founders whose activity_score is 'dead' (no posts in > ACTIVITY_DORMANT_DAYS)
+  - founders that already have a DM (any sequence) in the queue
+"""
 import os
 
 from db import connect, init_db, start_run, update_run
@@ -35,7 +41,7 @@ Candidate profile:
 Output ONLY the DM text. No preamble, no quotes, no explanation."""
 
 
-def run():
+def run(founder_ids: list[int] | None = None):
     from google import genai
     from google.genai import types
 
@@ -50,19 +56,28 @@ def run():
     system = _system_prompt(context_md)
 
     with connect() as conn:
-        rows = conn.execute(
-            """SELECT f.id AS founder_id, f.company_id, f.company_name, f.founder_name, f.twitter_handle,
-                      c.one_liner, c.tags
-               FROM founders f
-               LEFT JOIN companies c ON c.id = f.company_id
-               WHERE f.handle_status = 'found'
-                 AND f.twitter_handle IS NOT NULL
-                 AND f.id NOT IN (SELECT founder_id FROM dms WHERE founder_id IS NOT NULL)"""
-        ).fetchall()
+        base_sql = """SELECT f.id AS founder_id, f.company_id, f.company_name,
+                              f.founder_name, f.twitter_handle,
+                              c.one_liner, c.tags,
+                              COALESCE(a.activity_score, 'unknown') AS activity_score
+                       FROM founders f
+                       LEFT JOIN companies c ON c.id = f.company_id
+                       LEFT JOIN founder_activity a ON a.founder_id = f.id
+                       WHERE f.handle_status = 'found'
+                         AND f.twitter_handle IS NOT NULL
+                         AND COALESCE(a.activity_score, 'unknown') != 'dead'
+                         AND f.id NOT IN (SELECT founder_id FROM dms WHERE founder_id IS NOT NULL)"""
+        if founder_ids:
+            placeholders = ",".join("?" * len(founder_ids))
+            rows = conn.execute(
+                base_sql + f" AND f.id IN ({placeholders})", founder_ids,
+            ).fetchall()
+        else:
+            rows = conn.execute(base_sql).fetchall()
 
     total = len(rows)
     run_id = start_run("generate_dms", total=total)
-    log.info(f"Generating DMs for {total} founders with model {MODEL}")
+    log.info(f"generate_dms: {total} founders (model {MODEL})")
 
     config = types.GenerateContentConfig(
         system_instruction=system,
@@ -71,10 +86,16 @@ def run():
     )
 
     for i, r in enumerate(rows, 1):
+        activity_hint = ""
+        if r["activity_score"] == "active":
+            activity_hint = " They post frequently — you can reference Twitter as a current channel."
+        elif r["activity_score"] == "dormant":
+            activity_hint = " They post rarely — keep it brief and don't assume they'll see this quickly."
+
         user_msg = (
             f"Company: {r['company_name']}. "
             f"What they do: {r['one_liner'] or '(unknown)'}. "
-            f"Tags: {r['tags'] or '(unknown)'}."
+            f"Tags: {r['tags'] or '(unknown)'}.{activity_hint}"
         )
         try:
             resp = client.models.generate_content(
@@ -83,7 +104,6 @@ def run():
                 config=config,
             )
             dm_text = (resp.text or "").strip()
-            # Strip wrapping quotes if the model added them
             if (dm_text.startswith('"') and dm_text.endswith('"')) or \
                (dm_text.startswith("'") and dm_text.endswith("'")):
                 dm_text = dm_text[1:-1].strip()
@@ -97,15 +117,20 @@ def run():
 
         char_count = len(dm_text)
         with connect() as conn:
-            conn.execute(
-                """INSERT INTO dms (founder_id, company_name, founder_name, twitter_handle, dm_text, char_count)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+            cur = conn.execute(
+                """INSERT INTO dms (founder_id, company_name, founder_name, twitter_handle,
+                                    dm_text, char_count, sequence)
+                   VALUES (?, ?, ?, ?, ?, ?, 1)""",
                 (r["founder_id"], r["company_name"], r["founder_name"],
                  r["twitter_handle"], dm_text, char_count),
             )
+            new_id = cur.lastrowid
+            # thread_id = self for initial DMs.
+            conn.execute("UPDATE dms SET thread_id = ? WHERE id = ?", (new_id, new_id))
             conn.commit()
 
-        log.info(f"[{i}/{total}] {r['founder_name']} @{r['twitter_handle']} ({char_count} chars)")
+        log.info(f"[{i}/{total}] {r['founder_name']} @{r['twitter_handle']} "
+                 f"({char_count} chars, score={r['activity_score']})")
         update_run(run_id, processed=i, log_tail=get_tail())
 
     update_run(run_id, status="completed", log_tail=get_tail(), finished=True)

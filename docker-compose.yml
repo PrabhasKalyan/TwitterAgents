@@ -10,6 +10,7 @@ services:
       - DATABASE_URL=/data/outreach.db
       - LOG_FILE=/logs/outreach.log
       - SCREENSHOT_DIR=/data/screenshots
+      - DAILY_LIMIT=100
     ports:
       - "8000:8000"
 
@@ -39,5 +40,6 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - FIND_HANDLES_LIMIT=${FIND_HANDLES_LIMIT:-0}
+    command: ["python", "run.py", "--loop"]
     profiles:
       - worker

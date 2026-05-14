@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS companies (
   name TEXT, one_liner TEXT, tags TEXT, website TEXT,
   yc_url TEXT, team_size INTEGER, status TEXT, stage TEXT, is_hiring BOOLEAN,
   filtered_in BOOLEAN DEFAULT FALSE,
+  batch_status TEXT DEFAULT 'pending',  -- pending|processing|done
+  batch_started_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -22,7 +24,18 @@ CREATE TABLE IF NOT EXISTS founders (
   founder_name TEXT,
   twitter_handle TEXT,
   handle_status TEXT DEFAULT 'pending',
+  search_source TEXT,  -- 'ddg' | 'x_fallback' | null
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS founder_activity (
+  founder_id INTEGER PRIMARY KEY REFERENCES founders(id),
+  last_tweet_at DATETIME,
+  tweet_count_recent INTEGER,
+  followers INTEGER,
+  following INTEGER,
+  activity_score TEXT,  -- active|semi_active|dormant|dead|unknown
+  checked_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dms (
@@ -38,6 +51,10 @@ CREATE TABLE IF NOT EXISTS dms (
   sent_at DATETIME,
   error_msg TEXT,
   screenshot_path TEXT,
+  thread_id INTEGER,         -- id of the initial DM in this thread (self-id for initial)
+  sequence INTEGER DEFAULT 1, -- 1 = initial, 2..8 = follow-ups
+  replied BOOLEAN DEFAULT 0,
+  reply_checked_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -60,16 +77,39 @@ CREATE TABLE IF NOT EXISTS daily_send_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_companies_filtered ON companies(filtered_in);
+CREATE INDEX IF NOT EXISTS idx_companies_batch ON companies(batch_status);
 CREATE INDEX IF NOT EXISTS idx_founders_status ON founders(handle_status);
 CREATE INDEX IF NOT EXISTS idx_dms_review ON dms(review_status);
 CREATE INDEX IF NOT EXISTS idx_dms_send ON dms(send_status);
+CREATE INDEX IF NOT EXISTS idx_dms_thread ON dms(thread_id);
+CREATE INDEX IF NOT EXISTS idx_dms_replied ON dms(replied);
 """
+
+# Idempotent column additions for upgrades from older schemas.
+MIGRATIONS = [
+    ("companies", "batch_status", "TEXT DEFAULT 'pending'"),
+    ("companies", "batch_started_at", "DATETIME"),
+    ("founders", "search_source", "TEXT"),
+    ("dms", "thread_id", "INTEGER"),
+    ("dms", "sequence", "INTEGER DEFAULT 1"),
+    ("dms", "replied", "BOOLEAN DEFAULT 0"),
+    ("dms", "reply_checked_at", "DATETIME"),
+]
+
+
+def _migrate(conn):
+    for table, col, decl in MIGRATIONS:
+        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    conn.commit()
 
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         conn.commit()
 
 

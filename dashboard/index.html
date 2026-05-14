@@ -64,7 +64,8 @@
               border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
   .pipeline h2 { margin: 0 0 12px; font-size: 13px; color: var(--fg-dim);
                  text-transform: uppercase; letter-spacing: 0.8px; }
-  .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; align-items: stretch; }
+  .steps { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; align-items: stretch; }
+  @media (max-width: 1100px) { .steps { grid-template-columns: repeat(3, 1fr); } }
   .step { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
           background: var(--bg-3); position: relative; }
   .step .name { font-size: 12px; color: var(--fg-dim); text-transform: uppercase;
@@ -131,6 +132,15 @@
   .pill.failed { background: rgba(239,68,68,0.15); color: var(--err); }
   .pill.queued { background: rgba(56,189,248,0.15); color: var(--accent-2); }
   .pill.pending { background: rgba(251,191,36,0.15); color: var(--warn); }
+  .pill.approved { background: rgba(110,231,183,0.15); color: var(--accent); }
+  .pill.skipped { background: rgba(91,100,115,0.2); color: var(--fg-mute); }
+  .pill.act-active { background: rgba(34,197,94,0.2); color: var(--ok); }
+  .pill.act-semi_active { background: rgba(56,189,248,0.18); color: var(--accent-2); }
+  .pill.act-dormant { background: rgba(251,191,36,0.18); color: var(--warn); }
+  .pill.act-dead { background: rgba(239,68,68,0.18); color: var(--err); }
+  .pill.act-unknown { background: rgba(91,100,115,0.18); color: var(--fg-mute); }
+  .pill.seq { background: rgba(167,139,250,0.18); color: #c4b5fd; }
+  .pill.replied { background: rgba(34,197,94,0.25); color: var(--ok); }
 
   /* Logs */
   .log-window { background: #06080c; color: #cdd6e4; padding: 12px 14px;
@@ -194,9 +204,26 @@
       <div class="value" id="s-dms">0</div>
       <div class="sub"><span id="s-pending">0</span> pending review</div></div>
     <div class="stat"><div class="label">DMs Sent Today</div>
-      <div class="value ok" id="s-today">0/20</div>
-      <div class="sub">daily cap: 20</div></div>
-    <div class="stat"><div class="label">Failed</div>
+      <div class="value ok" id="s-today">0/100</div>
+      <div class="sub">daily cap: <span id="s-cap">100</span></div></div>
+    <div class="stat"><div class="label">Replies / Awaiting</div>
+      <div class="value ok" id="s-replies">0</div>
+      <div class="sub"><span id="s-awaiting">0</span> awaiting · <span id="s-due">0</span> follow-up due</div></div>
+  </div>
+  <div class="stats" style="margin-top: 10px;">
+    <div class="stat"><div class="label">Active Founders</div>
+      <div class="value ok" id="s-active">0</div>
+      <div class="sub">tweeted ≤7d</div></div>
+    <div class="stat"><div class="label">Semi-active</div>
+      <div class="value" id="s-semi">0</div>
+      <div class="sub">≤30d</div></div>
+    <div class="stat"><div class="label">Dormant</div>
+      <div class="value warn" id="s-dormant">0</div>
+      <div class="sub">≤90d</div></div>
+    <div class="stat"><div class="label">Dead (skipped)</div>
+      <div class="value err" id="s-dead">0</div>
+      <div class="sub">no posts &gt;90d</div></div>
+    <div class="stat"><div class="label">Failed sends</div>
       <div class="value err" id="s-failed">0</div>
       <div class="sub">requires retry</div></div>
   </div>
@@ -211,13 +238,19 @@
       <div class="step idle" data-step="find_handles"><div class="name">Find Handles</div>
         <div class="status">idle</div><div class="progress-bar"><div></div></div>
         <div class="meta">—</div></div>
+      <div class="step idle" data-step="check_activity"><div class="name">Activity</div>
+        <div class="status">idle</div><div class="progress-bar"><div></div></div>
+        <div class="meta">—</div></div>
       <div class="step idle" data-step="generate_dms"><div class="name">Generate DMs</div>
         <div class="status">idle</div><div class="progress-bar"><div></div></div>
         <div class="meta">—</div></div>
-      <div class="step idle" data-step="review"><div class="name">Review</div>
-        <div class="status">manual</div><div class="progress-bar"><div></div></div>
-        <div class="meta">human-in-loop</div></div>
       <div class="step idle" data-step="send"><div class="name">Send</div>
+        <div class="status">idle</div><div class="progress-bar"><div></div></div>
+        <div class="meta">—</div></div>
+      <div class="step idle" data-step="check_replies"><div class="name">Replies</div>
+        <div class="status">idle</div><div class="progress-bar"><div></div></div>
+        <div class="meta">—</div></div>
+      <div class="step idle" data-step="queue_followups"><div class="name">Follow-ups</div>
         <div class="status">idle</div><div class="progress-bar"><div></div></div>
         <div class="meta">—</div></div>
     </div>
@@ -235,6 +268,8 @@
           <div class="tab active" data-tab="pending">Pending <span id="cnt-pending">0</span></div>
           <div class="tab" data-tab="approved">Approved <span id="cnt-approved">0</span></div>
           <div class="tab" data-tab="sent">Sent <span id="cnt-sent">0</span></div>
+          <div class="tab" data-tab="awaiting">Awaiting reply <span id="cnt-awaiting">0</span></div>
+          <div class="tab" data-tab="followups">Follow-ups <span id="cnt-followups">0</span></div>
           <div class="tab" data-tab="failed">Failed <span id="cnt-failed">0</span></div>
         </div>
       </div>
@@ -290,13 +325,23 @@
     $("#s-dms").textContent = s.dms_generated;
     $("#s-pending").textContent = s.dms_pending;
     $("#s-today").textContent = `${s.todays_sends}/${s.daily_limit}`;
+    $("#s-cap").textContent = s.daily_limit;
     $("#s-failed").textContent = s.dms_failed;
     const today = s.todays_sends;
     $("#s-today").className = "value " + (today >= s.daily_limit ? "warn" : "ok");
+    $("#s-replies").textContent = s.replies_received || 0;
+    $("#s-awaiting").textContent = s.awaiting_reply || 0;
+    $("#s-due").textContent = s.followup_due || 0;
+    $("#s-active").textContent = s.active_founders || 0;
+    $("#s-semi").textContent = s.semi_active_founders || 0;
+    $("#s-dormant").textContent = s.dormant_founders || 0;
+    $("#s-dead").textContent = s.dead_founders || 0;
     $("#cnt-pending").textContent = s.dms_pending;
     $("#cnt-approved").textContent = s.dms_approved;
     $("#cnt-sent").textContent = s.dms_sent;
     $("#cnt-failed").textContent = s.dms_failed;
+    $("#cnt-awaiting").textContent = s.awaiting_reply || 0;
+    $("#cnt-followups").textContent = s.followup_dms || 0;
   }
 
   // ---------------- PIPELINE ----------------
@@ -403,6 +448,10 @@
       url = "/api/dms?send_status=sent&limit=100";
     } else if (currentTab === "failed") {
       url = "/api/dms?send_status=failed&limit=100";
+    } else if (currentTab === "awaiting") {
+      url = "/api/dms?awaiting_reply=true&limit=100";
+    } else if (currentTab === "followups") {
+      url = "/api/dms?only_followups=true&limit=100";
     } else {
       url = `/api/dms?status=${currentTab}&limit=100`;
     }
@@ -425,15 +474,24 @@
     const sendPill = d.send_status && d.send_status !== "queued"
       ? `<span class="pill ${d.send_status}">${d.send_status}</span>` : "";
     const revPill = `<span class="pill ${d.review_status}">${d.review_status}</span>`;
+    const actScore = d.activity_score || "unknown";
+    const actPill = `<span class="pill act-${actScore}">${actScore.replace('_', ' ')}</span>`;
+    const seqPill = (d.sequence && d.sequence > 1)
+      ? `<span class="pill seq">follow-up #${d.sequence - 1}</span>` : "";
+    const repliedPill = d.replied ? `<span class="pill replied">replied</span>` : "";
     const err = d.error_msg ? `<div style="color: var(--err); font-size: 11px; margin-top: 6px;">⚠ ${escapeHTML(d.error_msg)}</div>` : "";
+    const lastTweet = d.last_tweet_at
+      ? `<span class="co" style="font-size:11px;">· last tweet ${new Date(d.last_tweet_at.replace(' ','T')).toLocaleDateString()}</span>`
+      : "";
     return `
       <div class="dm-card" data-id="${d.id}">
         <div class="dm-head">
           <div class="dm-who">${escapeHTML(d.founder_name || "(unknown)")}
             <span class="handle">@${escapeHTML(d.twitter_handle || "")}</span>
             <span class="co">${escapeHTML(d.company_name || "")}</span>
+            ${lastTweet}
           </div>
-          <div>${revPill} ${sendPill}</div>
+          <div>${actPill} ${seqPill} ${repliedPill} ${revPill} ${sendPill}</div>
         </div>
         <textarea class="dm-text" ${editable ? "" : "readonly"}>${escapeHTML(d.dm_text || "")}</textarea>
         ${err}

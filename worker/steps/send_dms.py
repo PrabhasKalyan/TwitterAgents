@@ -1,11 +1,11 @@
-"""Send approved DMs via Playwright. Respects daily 20-message cap."""
+"""Send approved DMs via Playwright. Respects DAILY_LIMIT (from config)."""
 import asyncio
 import json
 import os
 import random
-import time
 from datetime import datetime
 
+from config import DAILY_LIMIT, SEND_DELAY_MAX, SEND_DELAY_MIN
 from db import (connect, increment_send_count, init_db, start_run,
                 todays_send_count, update_run)
 from logger import get_logger, get_tail
@@ -14,7 +14,6 @@ log = get_logger()
 
 CREDS_PATH = os.environ.get("TW_CREDS", "/inputs/twitter_credentials.json")
 SCREENSHOT_DIR = os.environ.get("SCREENSHOT_DIR", "/data/screenshots")
-DAILY_LIMIT = 20
 
 
 def _load_cookies():
@@ -42,7 +41,6 @@ async def _screenshot(page, handle: str, tag: str = "fail") -> str:
 
 
 async def _send_one(page, handle: str, text: str) -> tuple[bool, str, str]:
-    """Returns (success, error_msg, screenshot_path)."""
     try:
         await page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2500)
@@ -71,7 +69,6 @@ async def _send_one(page, handle: str, text: str) -> tuple[bool, str, str]:
         compose = page.locator('[data-testid="dmComposerTextInput"]')
         await compose.wait_for(state="visible", timeout=10000)
         await compose.click()
-        # Type as a human would
         for chunk in [text[i:i+8] for i in range(0, len(text), 8)]:
             await page.keyboard.type(chunk)
             await page.wait_for_timeout(random.randint(40, 110))
@@ -82,7 +79,6 @@ async def _send_one(page, handle: str, text: str) -> tuple[bool, str, str]:
         await send_btn.click()
         await page.wait_for_timeout(2500)
 
-        # Confirm send by checking compose box cleared OR an error toast appeared
         try:
             val = await compose.input_value()
         except Exception:
@@ -97,7 +93,7 @@ async def _send_one(page, handle: str, text: str) -> tuple[bool, str, str]:
         return False, f"{type(e).__name__}: {e}", shot
 
 
-async def _async_run(dry_run: bool = False):
+async def _async_run(dry_run: bool = False, max_to_send: int | None = None):
     from playwright.async_api import async_playwright
 
     init_db()
@@ -108,30 +104,36 @@ async def _async_run(dry_run: bool = False):
         return
 
     remaining = DAILY_LIMIT - sent_today
+    if max_to_send is not None:
+        remaining = min(remaining, max_to_send)
 
     with connect() as conn:
-        # Exclude handles already sent
+        # Order: initial DMs first, then follow-ups by sequence. Exclude resends.
         rows = conn.execute(
-            """SELECT id, twitter_handle, dm_text, company_name, founder_name
+            """SELECT id, twitter_handle, dm_text, company_name, founder_name, sequence
                FROM dms
                WHERE review_status = 'approved'
                  AND send_status != 'sent'
                  AND twitter_handle IS NOT NULL
-                 AND twitter_handle NOT IN (SELECT twitter_handle FROM dms WHERE send_status = 'sent')
-               ORDER BY id ASC
+               ORDER BY sequence ASC, id ASC
                LIMIT ?""",
             (remaining,),
         ).fetchall()
 
     total = len(rows)
     run_id = start_run("send", total=total)
-    log.info(f"Sending up to {total} DMs (already sent today: {sent_today}/{DAILY_LIMIT}). dry_run={dry_run}")
+    log.info(f"send: up to {total} DMs (today: {sent_today}/{DAILY_LIMIT}). dry_run={dry_run}")
 
     if dry_run:
         for r in rows:
-            log.info(f"  [DRY] @{r['twitter_handle']} ({r['founder_name']} / {r['company_name']}):")
+            log.info(f"  [DRY seq={r['sequence']}] @{r['twitter_handle']} "
+                     f"({r['founder_name']} / {r['company_name']}):")
             log.info(f"        {r['dm_text']}")
         update_run(run_id, processed=total, status="completed", log_tail=get_tail(), finished=True)
+        return
+
+    if total == 0:
+        update_run(run_id, status="completed", log_tail=get_tail(), finished=True)
         return
 
     cookies = _load_cookies()
@@ -147,14 +149,14 @@ async def _async_run(dry_run: bool = False):
         page = await context.new_page()
 
         for i, r in enumerate(rows, 1):
-            # Re-check daily cap each iteration in case other instances ran
             if todays_send_count() >= DAILY_LIMIT:
                 log.warning("Daily cap hit mid-run, stopping cleanly")
-                update_run(run_id, processed=i - 1, status="rate_limited", log_tail=get_tail(), finished=True)
+                update_run(run_id, processed=i - 1, status="rate_limited",
+                           log_tail=get_tail(), finished=True)
                 await browser.close()
                 return
 
-            log.info(f"[{i}/{total}] sending to @{r['twitter_handle']}")
+            log.info(f"[{i}/{total}] seq={r['sequence']} -> @{r['twitter_handle']}")
             ok, err, shot = await _send_one(page, r["twitter_handle"], r["dm_text"])
 
             with connect() as conn:
@@ -177,8 +179,8 @@ async def _async_run(dry_run: bool = False):
             update_run(run_id, processed=i, log_tail=get_tail())
 
             if i < total:
-                delay = random.uniform(50, 100)
-                log.info(f"  sleeping {delay:.1f}s")
+                delay = random.uniform(SEND_DELAY_MIN, SEND_DELAY_MAX)
+                log.info(f"  sleeping {delay:.0f}s")
                 await asyncio.sleep(delay)
 
         await browser.close()
@@ -187,8 +189,8 @@ async def _async_run(dry_run: bool = False):
     log.info("send_dms done")
 
 
-def run(dry_run: bool = False):
-    asyncio.run(_async_run(dry_run=dry_run))
+def run(dry_run: bool = False, max_to_send: int | None = None):
+    asyncio.run(_async_run(dry_run=dry_run, max_to_send=max_to_send))
 
 
 if __name__ == "__main__":

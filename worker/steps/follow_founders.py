@@ -50,34 +50,46 @@ async def _safe_eval(page, js: str, default):
 
 
 async def _follow_handle(page, handle: str) -> tuple[bool, str]:
-    """Returns (ok, status) where status is 'followed' | 'already' | 'failed'."""
+    """Returns (ok, status) where status is 'followed' | 'failed' | 'missing'."""
     try:
-        await page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=20000)
-        await page.wait_for_timeout(1500)
-        state = await _safe_eval(
-            page,
-            """() => {
-                const btns = Array.from(document.querySelectorAll('[data-testid$="-follow"], [data-testid$="-unfollow"], [role="button"]'));
-                for (const b of btns) {
-                    const txt = (b.innerText || '').trim();
-                    if (txt === 'Following' || txt === 'Unfollow') return 'already';
-                }
-                for (const b of btns) {
-                    const txt = (b.innerText || '').trim();
-                    if (txt === 'Follow') { b.click(); return 'clicked'; }
-                }
-                return 'no_button';
-            }""",
-            "no_button",
-        )
-        if state == "already":
-            return True, "followed"
-        if state == "clicked":
-            await page.wait_for_timeout(1000)
-            return True, "followed"
+        await page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=25000)
+        # Wait for the React-rendered profile header to show either a follow or unfollow button.
+        scope = page.locator('[data-testid="primaryColumn"]')
+        follow_btn = scope.locator('[data-testid$="-follow"]').first
+        unfollow_btn = scope.locator('[data-testid$="-unfollow"]').first
+
+        try:
+            await page.wait_for_selector(
+                '[data-testid="primaryColumn"] [data-testid$="-follow"], '
+                '[data-testid="primaryColumn"] [data-testid$="-unfollow"]',
+                timeout=12000,
+            )
+        except Exception:
+            # Account might be suspended / deactivated / blocked.
+            body_txt = ""
+            try:
+                body_txt = (await page.locator("body").inner_text(timeout=2000))[:400].lower()
+            except Exception:
+                pass
+            if any(k in body_txt for k in ("account suspended", "doesn't exist", "this account doesn")):
+                return False, "missing"
+            return False, "failed"
+
+        if await unfollow_btn.count() > 0:
+            return True, "followed"  # already following — record as done
+
+        if await follow_btn.count() > 0:
+            await follow_btn.click(timeout=5000)
+            # Confirm the toggle flipped to unfollow.
+            try:
+                await scope.locator('[data-testid$="-unfollow"]').first.wait_for(timeout=5000)
+                return True, "followed"
+            except Exception:
+                return False, "failed"
+
         return False, "failed"
     except Exception as e:
-        log.warning(f"follow failed for @{handle}: {e}")
+        log.warning(f"follow failed for @{handle}: {type(e).__name__}: {e}")
         return False, "failed"
 
 
